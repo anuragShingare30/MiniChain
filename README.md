@@ -48,10 +48,58 @@
 ---
 
 <div align="center">
-<h1>TODO: Project Name</h1>
+<h1>MiniChain</h1>
 </div>
 
-[TODO](https://TODO.stability.nexus/) is a ... TODO: Project Description.
+MiniChain is a minimal fully functional blockchain implemented in Python.
+
+### Background and Motivation
+
+* Most well-known blockchains are now several years old and have accumulated a lot of technical debt.
+  Simply forking their codebases is not an optimal option for starting a new chain.
+
+* MiniChain will be focused on research. Its primary purpose is not to be yet another blockchain
+  trying to be the one blockchain to kill them all, but rather to serve as a clean codebase that can be a benchmark for research of
+  variations of the technology. (We hope that MiniChain will be as valuable for blockchain research as, for instance,
+  MiniSat was valuable for satisfiability and automated reasoning research. MiniSat had less than 600 lines of C++ code.)
+
+* MiniChain will be focused on education. By having a clean and small codebase, devs will be able to understand
+  blockchains by looking at the codebase.
+
+* The blockchain space is again going through a phase where many new blockchains are being launched.
+  Back in 2017 and 2018, such an expansion period led to many general frameworks for blockchains,
+  such as Scorex and various Hyperledger frameworks. But most of these frameworks suffered from speculative generality and
+  were bloated. They focused on extensibility and configurability. MiniChain has a different philosophy:
+  focus on minimality and, therefore, ease of modification.
+
+* Recent advances in networking and crypto libraries for Python make it possible to develop MiniChain in Python.
+  Given that Python is one of the easiest languages to learn and results in usually boilerplate-minimized and easy to read code,
+  implementing MiniChain in Python aligns with MiniChain's educational goal.
+
+
+### Overview of Tasks
+
+* Develop a fully functional minimal blockchain in Python, with all the expected components:
+  peer-to-peer networking, consensus, mempool, ledger, ...
+
+* Bonus task: add smart contracts to the blockchain. 
+
+Candidates are expected to refine these tasks in their GSoC proposals. 
+It is encouraged that you develop an initial prototype during the application phase.
+
+### Requirements
+
+* Use [PyNaCl](https://pynacl.readthedocs.io/en/latest/) library for hashing, signing transactions and verifying signatures.
+* Use [Py-libp2p](https://github.com/libp2p/py-libp2p/tree/main) for p2p networking.
+* Implement Proof-of-Work as the consensus protocol.
+* Use accounts (instead of UTxO) as the accounting model for the ledger.
+* Use as few lines of code as possible without compromising readability and understandability.
+* For the bonus task, make Python itself be the language used for smart contracts, but watch out for security concerns related to executing arbitrary code from untrusted sources.
+
+### Resources
+
+* Read this book:  https://www.marabu.dev/blockchain-foundations.pdf 
+
 
 ---
 
