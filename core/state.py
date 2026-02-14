@@ -13,6 +13,8 @@ class State:
         self.accounts = {}
         self.contract_machine = ContractMachine(self)
 
+    DEFAULT_MINING_REWARD = 50
+
     def get_account(self, address):
         if address not in self.accounts:
             self.accounts[address] = {
@@ -44,7 +46,9 @@ class State:
         """
         Return an independent copy of state for transactional validation.
         """
-        return copy.deepcopy(self)
+        new_state = copy.deepcopy(self)
+        new_state.contract_machine = ContractMachine(new_state) # Reinitialize contract_machine
+        return new_state
 
     def validate_and_apply(self, tx):
         """
@@ -52,8 +56,11 @@ class State:
         Returns the same success/failure shape as apply_transaction().
         NOTE: Delegates to apply_transaction. Callers should use this for
         semantic validation entry points.
-        TODO: Implement specific semantic validation logic here.
         """
+        # Semantic validation: amount must be an integer and non-negative
+        if not isinstance(tx.amount, int) or tx.amount < 0:
+            return False
+        # Further checks can be added here
         return self.apply_transaction(tx)
 
     def apply_transaction(self, tx):
@@ -94,25 +101,26 @@ class State:
 
             # Fail if contract does not exist or has no code
             if not receiver or not receiver.get("code"):
-                # Rollback sender balance, but nonce remains consumed
-                sender['balance'] += tx.amount
-                # Do NOT rollback nonce
+                # Rollback sender balance and nonce on failure
+                sender['balance'] += tx.amount # Refund amount
+                sender['nonce'] -= 1
                 return False
 
             # Credit contract balance
             receiver['balance'] += tx.amount
 
             success = self.contract_machine.execute(
-                contract_address=tx.receiver,
+                contract_address=tx.receiver, # Pass receiver as contract_address
                 sender_address=tx.sender,
                 payload=tx.data,
                 amount=tx.amount
             )
 
             if not success:
-                # Rollback transfer if execution fails, nonce remains consumed
+                # Rollback transfer and nonce if execution fails
                 receiver['balance'] -= tx.amount
-                sender['balance'] += tx.amount
+                sender['balance'] += tx.amount # Refund amount
+                sender['nonce'] -= 1
                 return False
 
             return True
@@ -141,6 +149,15 @@ class State:
         else:
             raise KeyError(f"Contract address not found: {address}")
 
-    def credit_mining_reward(self, miner_address, reward=50):
+    def update_contract_storage_partial(self, address, updates):
+        if address not in self.accounts:
+            raise KeyError(f"Contract address not found: {address}")
+        if isinstance(updates, dict):
+            self.accounts[address]['storage'].update(updates)
+        else:
+            raise ValueError("Updates must be a dictionary")
+
+    def credit_mining_reward(self, miner_address, reward=None):
+        reward = reward if reward is not None else self.DEFAULT_MINING_REWARD
         account = self.get_account(miner_address)
         account['balance'] += reward

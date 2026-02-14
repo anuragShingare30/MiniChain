@@ -1,8 +1,8 @@
 import logging
 import multiprocessing
 import ast
-import sys
 
+import json # Moved to module-level import
 logger = logging.getLogger(__name__)
 
 def _safe_exec_worker(code, globals_dict, context_dict, result_queue):
@@ -14,11 +14,13 @@ def _safe_exec_worker(code, globals_dict, context_dict, result_queue):
         try:
             import resource
             # Limit CPU time (seconds) and memory (bytes) - example values
-            resource.setrlimit(resource.RLIMIT_CPU, (1, 1))
-            # resource.setrlimit(resource.RLIMIT_AS, (100 * 1024 * 1024, 100 * 1024 * 1024))
-        except ImportError as e:
-            logger.error(f"Resource limits not enforced: {e}")
-            raise RuntimeError(f"Resource limits not enforced: {e}")
+            resource.setrlimit(resource.RLIMIT_CPU, (2, 2)) # Align with p.join timeout (2 seconds)
+            resource.setrlimit(resource.RLIMIT_AS, (100 * 1024 * 1024, 100 * 1024 * 1024))
+        except ImportError:
+            logger.warning("Resource module not available. Contract will run without OS-level resource limits.")
+        except (OSError, ValueError) as e:
+            logger.error(f"Failed to set resource limits: {e}")
+            raise RuntimeError(f"Failed to set resource limits: {e}")
 
         exec(code, globals_dict, context_dict)
         # Return the updated storage
@@ -66,6 +68,14 @@ class ContractMachine:
             "min": min,
             "max": max,
             "abs": abs,
+                "str": str, # Keeping str for basic functionality, relying on AST checks for safety
+            "bool": bool,
+            "float": float,
+            "list": list,
+            "dict": dict,
+            "tuple": tuple,
+            "sum": sum,
+            "Exception": Exception, # Added to allow contracts to raise exceptions
         }
 
         globals_for_exec = {
@@ -80,7 +90,7 @@ class ContractMachine:
                 "value": amount,
                 "data": payload,
             },
-            "print": print,  # Explicitly allowed for debugging
+            # "print": print,  # Removed for security
         }
 
         try:
@@ -95,6 +105,7 @@ class ContractMachine:
 
             if p.is_alive():
                 p.kill()
+                p.join()
                 logger.error("Contract execution timed out")
                 return False
 
@@ -105,6 +116,13 @@ class ContractMachine:
             result = queue.get()
             if result["status"] != "success":
                 logger.error(f"Contract Execution Failed: {result.get('error')}")
+                return False
+
+            # Validate storage is JSON serializable
+            try:
+                json.dumps(result["storage"])
+            except (TypeError, ValueError):
+                logger.error("Contract storage not JSON serializable")
                 return False
 
             # Commit updated storage only after successful execution
@@ -129,6 +147,23 @@ class ContractMachine:
                     return False
                 if isinstance(node, ast.Name) and node.id.startswith("__"):
                     logger.warning("Rejected contract code with double-underscore name.")
+                    return False
+                if isinstance(node, (ast.Import, ast.ImportFrom)):
+                    logger.warning("Rejected contract code with import statement.")
+                    return False
+                if isinstance(node, ast.Call):
+                    if isinstance(node.func, ast.Name) and node.func.id == 'type':
+                        logger.warning("Rejected type() call.")
+                        return False
+                if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id in {"getattr", "setattr", "delattr"}:
+                    logger.warning(f"Rejected direct call to {node.func.id}.")
+                    return False
+                if isinstance(node, ast.Constant) and isinstance(node.value, str):
+                    if "__" in node.value:
+                        logger.warning("Rejected string literal with double-underscore.")
+                        return False
+                if isinstance(node, ast.JoinedStr): # f-strings
+                    logger.warning("Rejected f-string usage.")
                     return False
             return True
         except SyntaxError:

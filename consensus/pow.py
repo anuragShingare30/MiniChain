@@ -1,7 +1,6 @@
 import json
 import time
-from nacl.hash import sha256
-from nacl.encoding import HexEncoder
+import hashlib
 
 
 class MiningExceededError(Exception):
@@ -11,7 +10,7 @@ class MiningExceededError(Exception):
 def calculate_hash(block_dict):
     """Calculates SHA256 hash of a block header."""
     block_string = json.dumps(block_dict, sort_keys=True).encode("utf-8")
-    return sha256(block_string, encoder=HexEncoder).decode("utf-8")
+    return hashlib.sha256(block_string).hexdigest()
 
 
 def mine_block(
@@ -24,9 +23,13 @@ def mine_block(
 ):
     """Mines a block using Proof-of-Work without mutating input block until success."""
 
+    if not isinstance(difficulty, int) or difficulty <= 0:
+        raise ValueError("Difficulty must be a positive integer.")
+
     target = "0" * difficulty
     local_nonce = 0
-    start_time = time.time()
+    header_dict = block.to_header_dict() # Construct header dict once outside loop
+    start_time = time.monotonic()
 
     if logger:
         logger.info(
@@ -44,14 +47,21 @@ def mine_block(
             raise MiningExceededError("Mining failed: max_nonce exceeded")
 
         # Enforce timeout if specified
-        if timeout_seconds is not None and (time.time() - start_time) > timeout_seconds:
+        if timeout_seconds is not None and (time.monotonic() - start_time) > timeout_seconds:
             if logger:
                 logger.warning("Mining timeout exceeded.")
             raise MiningExceededError("Mining failed: timeout exceeded")
 
-        # Temporarily set nonce for hashing only
-        block.nonce = local_nonce
-        block_hash = calculate_hash(block.to_header_dict())
+        header_dict["nonce"] = local_nonce
+        block_hash = calculate_hash(header_dict)
+
+        # Check difficulty target
+        if block_hash.startswith(target):
+            block.nonce = local_nonce  # Assign only on success
+            block.hash = block_hash
+            if logger:
+                logger.info("Success! Hash: %s", block_hash)
+            return block
 
         # Allow cancellation via progress callback (pass nonce explicitly)
         if progress_callback:
@@ -60,14 +70,6 @@ def mine_block(
                 if logger:
                     logger.info("Mining cancelled via progress_callback.")
                 raise MiningExceededError("Mining cancelled")
-
-        # Check difficulty target
-        if block_hash.startswith(target):
-            block.nonce = local_nonce
-            block.hash = block_hash
-            if logger:
-                logger.info("Success! Hash: %s", block_hash)
-            return block
 
         # Increment nonce after attempt
         local_nonce += 1

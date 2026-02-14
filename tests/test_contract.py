@@ -124,4 +124,13 @@ raise Exception("boom")
         tx_deploy = Transaction(self.pk, None, 10, initial_nonce, data=code)
         tx_deploy.sign(self.sk)
 
-        contract_add_
+        # Corrected typo: contract_add_ to contract_addr
+        contract_addr = self.state.apply_transaction(tx_deploy) 
+        self.assertTrue(isinstance(contract_addr, str))
+
+        # Verify balance and nonce after deploy
+        sender_after = self.state.get_account(self.pk)
+        self.assertEqual(sender_after["balance"], initial_balance - 10)
+        self.assertEqual(sender_after["nonce"], initial_nonce + 1)
+
+        # Further test calls if needed

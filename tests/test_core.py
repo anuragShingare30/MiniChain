@@ -2,12 +2,7 @@ import unittest
 from nacl.signing import SigningKey
 from nacl.encoding import HexEncoder
 
-# Adjust import path to look at root directory
-import sys
-import os
-
-from core import Transaction, Blockchain, Block, State
-from consensus import mine_block
+from core import Transaction, Blockchain, State # Removed unused imports
 
 class TestCore(unittest.TestCase):
     def setUp(self):
@@ -66,6 +61,15 @@ class TestCore(unittest.TestCase):
         
         self.assertEqual(self.state.get_account(self.alice_pk)['balance'], 10)
         self.assertEqual(self.state.get_account(self.bob_pk)['balance'], 0)
+
+    def test_transaction_wrong_signer(self):
+        """Test that a transaction signed with the wrong key is invalid."""
+        tx = Transaction(self.alice_pk, self.bob_pk, 10, 0) # Alice is sender
+        # Attempt to sign with Bob's key, which should raise ValueError
+        with self.assertRaises(ValueError) as cm:
+            tx.sign(self.bob_sk)
+        self.assertIn("Signing key does not match sender", str(cm.exception))
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -20,7 +20,8 @@ class P2PNetwork:
     """
 
     def __init__(self, handler_callback):
-        self.peers = []
+        if not callable(handler_callback):
+            raise ValueError("handler_callback must be callable")
         self.handler_callback = handler_callback
         self.pubsub = None  # Will be set in real implementation
 
@@ -28,23 +29,29 @@ class P2PNetwork:
         logger.info("Network: Listening on /ip4/0.0.0.0/tcp/0")
         # In real libp2p, we would await host.start() here
 
-    async def broadcast_transaction(self, tx):
-        msg = json.dumps({"type": "tx", "data": tx.to_dict()})
-        logger.info("Network: Broadcasting Tx from %s...", tx.sender[:5])
-
+    async def _broadcast_message(self, topic, msg_type, payload):
+        msg = json.dumps({"type": msg_type, "data": payload})
         if self.pubsub:
-            await self.pubsub.publish("minichain-global", msg.encode())
+            try:
+                await self.pubsub.publish(topic, msg.encode())
+            except Exception as e:
+                logger.error("Network: Publish failed: %s", e)
         else:
             logger.debug("Network: pubsub not initialized (mock mode)")
+
+    async def broadcast_transaction(self, tx):
+        sender = getattr(tx, "sender", "<unknown>")
+        logger.info("Network: Broadcasting Tx from %s...", sender[:5])
+        try:
+            payload = tx.to_dict()
+        except (TypeError, ValueError) as e:
+            logger.error("Network: Failed to serialize tx: %s", e)
+            return
+        await self._broadcast_message("minichain-global", "tx", payload)
 
     async def broadcast_block(self, block):
-        msg = json.dumps({"type": "block", "data": block.to_dict()})
         logger.info("Network: Broadcasting Block #%d", block.index)
-
-        if self.pubsub:
-            await self.pubsub.publish("minichain-global", msg.encode())
-        else:
-            logger.debug("Network: pubsub not initialized (mock mode)")
+        await self._broadcast_message("minichain-global", "block", block.to_dict())
 
     async def handle_message(self, msg):
         """
@@ -58,14 +65,25 @@ class P2PNetwork:
             if not isinstance(msg.data, (bytes, bytearray)):
                 raise TypeError("msg.data must be bytes")
 
-            decoded = msg.data.decode()
+            if len(msg.data) > 1024 * 1024:  # 1MB limit
+                logger.warning("Network: Message too large")
+                return
+
+            try:
+                decoded = msg.data.decode('utf-8')
+            except UnicodeDecodeError as e:
+                logger.warning("Network Error: UnicodeDecodeError during message decode: %s", e)
+                return
             data = json.loads(decoded)
 
             if not isinstance(data, dict) or "type" not in data or "data" not in data:
                 raise ValueError("Invalid message format")
 
         except (TypeError, ValueError, json.JSONDecodeError) as e:
-            logger.warning("Network Error: %s", e)
+            logger.warning("Network Error parsing message: %s", e)
             return
 
-        await self.handler_callback(data)
+        try:
+            await self.handler_callback(data)
+        except Exception:
+            logger.exception("Error in network handler callback for data: %s", data)

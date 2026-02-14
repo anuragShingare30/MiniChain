@@ -6,8 +6,8 @@ logger = logging.getLogger(__name__)
 
 class Mempool:
     def __init__(self, max_size=1000):
-        self.pending_txs = []
-        self.seen_tx_ids = set()  # Dedup tracking
+        self._pending_txs = []
+        self._seen_tx_ids = set()  # Dedup tracking
         self._lock = threading.Lock()
         self.max_size = max_size
 
@@ -25,24 +25,24 @@ class Mempool:
         - Transaction is not a duplicate
         """
 
+        tx_id = self._get_tx_id(tx)
+
         if not tx.verify():
             logger.warning("Mempool: Invalid signature rejected")
             return False
 
         with self._lock:
-            tx_id = self._get_tx_id(tx)
-
-            if tx_id in self.seen_tx_ids:
+            if tx_id in self._seen_tx_ids:
                 logger.warning(f"Mempool: Duplicate transaction rejected {tx_id}")
                 return False
 
-            if len(self.pending_txs) >= self.max_size:
+            if len(self._pending_txs) >= self.max_size:
                 # Simple eviction: drop oldest or reject. Here we reject.
                 logger.warning("Mempool: Full, rejecting transaction")
                 return False
 
-            self.pending_txs.append(tx)
-            self.seen_tx_ids.add(tx_id)
+            self._pending_txs.append(tx)
+            self._seen_tx_ids.add(tx_id)
 
             return True
 
@@ -52,10 +52,11 @@ class Mempool:
         """
 
         with self._lock:
-            txs = self.pending_txs[:]
+            txs = self._pending_txs[:]
 
             # Clear both list and dedup set to stay in sync
-            self.pending_txs = []
-            self.seen_tx_ids.clear()
+            self._pending_txs = []
+            confirmed_ids = {self._get_tx_id(tx) for tx in txs}
+            self._seen_tx_ids.difference_update(confirmed_ids)
 
             return txs
