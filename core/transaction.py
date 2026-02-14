@@ -2,7 +2,8 @@ import json
 import time
 from nacl.signing import SigningKey, VerifyKey
 from nacl.encoding import HexEncoder
-from nacl.exceptions import BadSignatureError
+from nacl.exceptions import BadSignatureError, CryptoError
+
 
 class Transaction:
     def __init__(self, sender, receiver, amount, nonce, data=None, signature=None):
@@ -10,7 +11,7 @@ class Transaction:
         self.receiver = receiver    # Public key (Hex str) or None for Deploy
         self.amount = amount
         self.nonce = nonce
-        self.data = data or ""      # Smart Contract Code or Input Data
+        self.data = data            # Preserve None (do NOT normalize to "")
         self.timestamp = time.time()
         self.signature = signature  # Hex str
 
@@ -22,7 +23,7 @@ class Transaction:
             "nonce": self.nonce,
             "data": self.data,
             "timestamp": self.timestamp,
-            "signature": self.signature
+            "signature": self.signature,
         }
 
     @property
@@ -33,9 +34,9 @@ class Transaction:
             "receiver": self.receiver,
             "amount": self.amount,
             "nonce": self.nonce,
-            "data": self.data
+            "data": self.data,
         }
-        return json.dumps(payload, sort_keys=True).encode('utf-8')
+        return json.dumps(payload, sort_keys=True).encode("utf-8")
 
     def sign(self, signing_key: SigningKey):
         signed = signing_key.sign(self.hash_payload)
@@ -44,9 +45,15 @@ class Transaction:
     def verify(self):
         if not self.signature:
             return False
+
         try:
             verify_key = VerifyKey(self.sender, encoder=HexEncoder)
             verify_key.verify(self.hash_payload, bytes.fromhex(self.signature))
             return True
-        except BadSignatureError:
+
+        except (BadSignatureError, CryptoError, ValueError):
+            # Covers:
+            # - Invalid signature
+            # - Malformed public key hex
+            # - Invalid hex in signature
             return False
