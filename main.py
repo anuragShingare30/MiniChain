@@ -13,7 +13,6 @@ logger = logging.getLogger(__name__)
 
 
 def create_wallet():
-    """Generate a new keypair."""
     sk = SigningKey.generate()
     pk = sk.verify_key.encode(encoder=HexEncoder).decode()
     return sk, pk
@@ -28,12 +27,10 @@ async def node_loop():
 
     pending_nonce_map = {}
 
+    # Simplified: state.get_account always returns dict
     def sync_nonce(address):
         account = state.get_account(address)
-        if account:
-            pending_nonce_map[address] = account["nonce"]
-        else:
-            pending_nonce_map.pop(address, None)
+        pending_nonce_map[address] = account["nonce"]
 
     def get_next_nonce(address):
         account_nonce = state.get_account(address)["nonce"]
@@ -41,11 +38,6 @@ async def node_loop():
         next_nonce = max(account_nonce, local_nonce)
         pending_nonce_map[address] = next_nonce
         return next_nonce
-
-    def increment_nonce(address):
-        pending_nonce_map[address] = pending_nonce_map.get(
-            address, state.get_account(address)["nonce"]
-        ) + 1
 
     async def handle_network_data(data):
         logger.info("Received network data: %s", data)
@@ -63,6 +55,10 @@ async def node_loop():
     state.credit_mining_reward(alice_pk, reward=100)
     sync_nonce(alice_pk)
 
+    # -------------------------------
+    # Alice Payment
+    # -------------------------------
+
     logger.info("[2] Transaction: Alice sends 10 coins to Bob")
 
     nonce = get_next_nonce(alice_pk)
@@ -74,16 +70,26 @@ async def node_loop():
         nonce=nonce,
     )
     tx_payment.sign(alice_sk)
-    increment_nonce(alice_pk)
 
     if mempool.add_transaction(tx_payment):
+        pending_nonce_map[alice_pk] = nonce + 1
         await network.broadcast_transaction(tx_payment)
     else:
-        logger.warning("Transaction rejected by mempool: %s", getattr(tx_payment, "hash", None))
-        sync_nonce(alice_pk)
+        logger.warning("Transaction rejected by mempool")
+
+    # -------------------------------
+    # Contract Deployment (UNSAFE)
+    # -------------------------------
 
     logger.info("[3] Smart Contract: Alice deploys a 'Storage' contract")
 
+    # WARNING:
+    # This contract uses raw Python executed via exec inside ContractMachine.
+    # This is UNSAFE and should NEVER be used in production.
+    # TODO: Replace ContractMachine exec-based runtime with:
+    # - RestrictedPython
+    # - WASM-based VM
+    # - Custom DSL interpreter
     contract_code = """
 # Storage Contract (UNSAFE EXAMPLE)
 if msg['data']:
@@ -100,13 +106,16 @@ if msg['data']:
         data=contract_code,
     )
     tx_deploy.sign(alice_sk)
-    increment_nonce(alice_pk)
 
     if mempool.add_transaction(tx_deploy):
+        pending_nonce_map[alice_pk] = nonce + 1
         await network.broadcast_transaction(tx_deploy)
     else:
-        logger.warning("Contract deploy rejected: %s", getattr(tx_deploy, "hash", None))
-        sync_nonce(alice_pk)
+        logger.warning("Contract deploy rejected")
+
+    # -------------------------------
+    # Mine Block 1
+    # -------------------------------
 
     logger.info("[4] Consensus: Mining Block 1")
 
@@ -124,6 +133,10 @@ if msg['data']:
     if chain.add_block(mined_block_1):
         logger.info("Block #%s added", mined_block_1.index)
 
+        # Credit miner reward
+        miner_address = getattr(mined_block_1, "miner", alice_pk)
+        state.credit_mining_reward(miner_address)
+
         for tx in mined_block_1.transactions:
             result = state.apply_transaction(tx)
 
@@ -134,9 +147,8 @@ if msg['data']:
 
             elif result is False or result is None:
                 logger.error(
-                    "Transaction failed in block %s: %s",
+                    "Transaction failed in block %s",
                     mined_block_1.index,
-                    getattr(tx, "hash", None),
                 )
                 sync_nonce(tx.sender)
 
@@ -144,6 +156,10 @@ if msg['data']:
                 sync_nonce(tx.sender)
     else:
         logger.error("Block 1 rejected by chain")
+
+    # -------------------------------
+    # Bob Interaction
+    # -------------------------------
 
     logger.info("[5] Interaction: Bob sends data to Contract")
 
@@ -161,13 +177,16 @@ if msg['data']:
         data="Hello Blockchain",
     )
     tx_call.sign(bob_sk)
-    increment_nonce(bob_pk)
 
     if mempool.add_transaction(tx_call):
+        pending_nonce_map[bob_pk] = nonce + 1
         await network.broadcast_transaction(tx_call)
     else:
-        logger.warning("Contract call rejected: %s", getattr(tx_call, "hash", None))
-        sync_nonce(bob_pk)
+        logger.warning("Contract call rejected")
+
+    # -------------------------------
+    # Mine Block 2
+    # -------------------------------
 
     logger.info("[6] Consensus: Mining Block 2")
 
@@ -184,20 +203,26 @@ if msg['data']:
     if chain.add_block(mined_block_2):
         logger.info("Block #%s added", mined_block_2.index)
 
+        miner_address = getattr(mined_block_2, "miner", alice_pk)
+        state.credit_mining_reward(miner_address)
+
         for tx in mined_block_2.transactions:
             result = state.apply_transaction(tx)
 
             if result is False or result is None:
                 logger.error(
-                    "Transaction failed in block %s: %s",
+                    "Transaction failed in block %s",
                     mined_block_2.index,
-                    getattr(tx, "hash", None),
                 )
                 sync_nonce(tx.sender)
             else:
                 sync_nonce(tx.sender)
     else:
         logger.error("Block 2 rejected by chain")
+
+    # -------------------------------
+    # Final State
+    # -------------------------------
 
     logger.info("[7] Final State Check")
     logger.info("Alice Balance: %s", state.get_account(alice_pk)["balance"])
