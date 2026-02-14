@@ -6,7 +6,6 @@ from nacl.encoding import HexEncoder
 
 class MiningExceededError(Exception):
     """Raised when max_nonce, timeout, or cancellation is exceeded during mining."""
-    pass
 
 
 def calculate_hash(block_dict):
@@ -18,24 +17,28 @@ def calculate_hash(block_dict):
 def mine_block(
     block,
     difficulty=4,
-    max_nonce=10_000_000,        # Default upper bound to prevent infinite mining
-    timeout_seconds=None,        # Optional timeout limit in seconds
+    max_nonce=10_000_000,
+    timeout_seconds=None,
     logger=None,
     progress_callback=None
 ):
-    """Mines a block using Proof-of-Work with nonce, timeout, and cancellation limits."""
+    """Mines a block using Proof-of-Work without mutating input block until success."""
 
     target = "0" * difficulty
-    block.nonce = 0
-    start_time = time.time()     # Record mining start time
+    local_nonce = 0
+    start_time = time.time()
 
     if logger:
-        logger.info(f"Mining block {block.index} (Difficulty: {difficulty})")
+        logger.info(
+            "Mining block %s (Difficulty: %s)",
+            block.index,
+            difficulty,
+        )
 
     while True:
 
-        # Enforce max_nonce limit
-        if block.nonce > max_nonce:
+        # Enforce max_nonce limit before hashing
+        if local_nonce >= max_nonce:
             if logger:
                 logger.warning("Max nonce exceeded during mining.")
             raise MiningExceededError("Mining failed: max_nonce exceeded")
@@ -46,11 +49,13 @@ def mine_block(
                 logger.warning("Mining timeout exceeded.")
             raise MiningExceededError("Mining failed: timeout exceeded")
 
-        block_hash = calculate_hash(block.to_header_dict())  # Compute current hash
+        # Temporarily set nonce for hashing only
+        block.nonce = local_nonce
+        block_hash = calculate_hash(block.to_header_dict())
 
-        # Allow cancellation via progress callback
+        # Allow cancellation via progress callback (pass nonce explicitly)
         if progress_callback:
-            should_continue = progress_callback(block, block_hash)
+            should_continue = progress_callback(local_nonce, block_hash)
             if should_continue is False:
                 if logger:
                     logger.info("Mining cancelled via progress_callback.")
@@ -58,9 +63,11 @@ def mine_block(
 
         # Check difficulty target
         if block_hash.startswith(target):
+            block.nonce = local_nonce
             block.hash = block_hash
             if logger:
-                logger.info(f"Success! Hash: {block_hash}")
+                logger.info("Success! Hash: %s", block_hash)
             return block
 
-        block.nonce += 1  # Increment nonce for next attempt
+        # Increment nonce after attempt
+        local_nonce += 1
