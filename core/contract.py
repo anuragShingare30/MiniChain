@@ -37,7 +37,7 @@ class ContractMachine:
         try:
             # SECURITY WARNING: exec() is unsafe for production blockchains.
             # This is for educational/research purposes only.
-            exec(code, {}, context)
+            exec(code, {"__builtins__": {}}, context)
             
             # Update storage if execution succeeded
             self.state.update_contract_storage(contract_address, context['storage'])
