@@ -14,6 +14,7 @@ logger = logging.getLogger(__name__)
 
 BURN_ADDRESS = "0" * 40
 
+
 def create_wallet():
     sk = SigningKey.generate()
     pk = sk.verify_key.encode(encoder=HexEncoder).decode()
@@ -31,12 +32,16 @@ def mine_and_process_block(chain, mempool, state, pending_nonce_map):
     )
 
     mined_block = mine_block(block)
-    deployed_contracts: list[str] = [] # Type hint for clarity
+
+    # Ensure miner field exists (minimal fix without touching Block class)
+    if not hasattr(mined_block, "miner"):
+        mined_block.miner = BURN_ADDRESS
+
+    deployed_contracts: list[str] = []
 
     if chain.add_block(mined_block):
         logger.info("Block #%s added", mined_block.index)
 
-        # Credit miner reward
         miner_attr = getattr(mined_block, "miner", None)
         if isinstance(miner_attr, str) and re.match(r'^[0-9a-fA-F]{40}$', miner_attr):
             miner_address = miner_attr
@@ -49,21 +54,20 @@ def mine_and_process_block(chain, mempool, state, pending_nonce_map):
         for tx in mined_block.transactions:
             result = state.apply_transaction(tx)
 
-            # Check for valid contract address (40 hex chars)
             if isinstance(result, str) and re.match(r'^[0-9a-fA-F]{40}$', result):
                 deployed_contracts.append(result)
-                logger.info("New Contract Deployed at: %s", result) # Added logging for deployed contract
+                logger.info("New Contract Deployed at: %s", result)
                 sync_nonce(state, pending_nonce_map, tx.sender)
             elif result is True:
                 sync_nonce(state, pending_nonce_map, tx.sender)
             elif result is False or result is None:
                 logger.error("Transaction failed in block %s", mined_block.index)
-                # Nonce is not synced for failed transactions
 
         return mined_block, deployed_contracts
     else:
         logger.error("Block rejected by chain")
         return None, []
+
 
 def sync_nonce(state, pending_nonce_map, address):
     account = state.get_account(address)
@@ -71,6 +75,7 @@ def sync_nonce(state, pending_nonce_map, address):
         pending_nonce_map[address] = account["nonce"]
     else:
         pending_nonce_map[address] = 0
+
 
 async def node_loop():
     logger.info("Starting MiniChain Node with Smart Contracts")
@@ -86,26 +91,25 @@ async def node_loop():
         account_nonce = account.get("nonce", 0) if account else 0
         local_nonce = pending_nonce_map.get(address, account_nonce)
         next_nonce = max(account_nonce, local_nonce)
-        pending_nonce_map[address] = next_nonce + 1 # Atomically increment for next call
+        pending_nonce_map[address] = next_nonce + 1
         return next_nonce
 
-    async def handle_network_data(data):
-        logger.info("Received network data: %s", data)
+    network = P2PNetwork(None)
 
-    network = P2PNetwork(handle_network_data)
-    
+    network_mempool = mempool
+    network_chain = chain
+
     async def _handle_network_data(data):
         logger.info("Received network data: %s", data)
         try:
             if data["type"] == "tx":
-                # Transaction constructor accepts all fields from to_dict
                 tx = Transaction(**data["data"])
                 if network_mempool.add_transaction(tx):
                     logger.info("Received transaction added to mempool: %s", tx.sender[:5])
-                    await network.broadcast_transaction(tx) # Re-broadcast
+                    await network.broadcast_transaction(tx)
+
             elif data["type"] == "block":
                 block_data = data["data"]
-                # Deserialize transactions within the block
                 transactions_raw = block_data.get("transactions", [])
                 transactions = [Transaction(**tx_data) for tx_data in transactions_raw]
 
@@ -116,23 +120,23 @@ async def node_loop():
                     timestamp=block_data.get("timestamp"),
                     difficulty=block_data.get("difficulty")
                 )
+
                 block.nonce = block_data.get("nonce", 0)
                 block.hash = block_data.get("hash")
+
                 if network_chain.add_block(block):
                     logger.info("Received block added to chain: #%s", block.index)
-                    # TODO: Reorg mempool, notify peers
+
         except Exception:
             logger.exception("Error processing network data: %s", data)
-    
+
+    network.handler_callback = _handle_network_data
+
     try:
-        network.handler_callback = _handle_network_data # Update handler
-        # Mempool, chain, state for network handler
-        network_mempool = mempool
-        network_chain = chain
-        network_state = state
-        await _run_node(network, state, chain, network_mempool, pending_nonce_map, claim_nonce)
+        await _run_node(network, state, chain, mempool, pending_nonce_map, claim_nonce)
     finally:
         await network.stop()
+
 
 async def _run_node(network, state, chain, mempool, pending_nonce_map, get_next_nonce):
     await network.start()
@@ -153,7 +157,7 @@ async def _run_node(network, state, chain, mempool, pending_nonce_map, get_next_
 
     logger.info("[2] Transaction: Alice sends 10 coins to Bob")
 
-    nonce = claim_nonce(alice_pk) # Use claim_nonce
+    nonce = get_next_nonce(alice_pk)
 
     tx_payment = Transaction(
         sender=alice_pk,
@@ -165,26 +169,20 @@ async def _run_node(network, state, chain, mempool, pending_nonce_map, get_next_
 
     if mempool.add_transaction(tx_payment):
         await network.broadcast_transaction(tx_payment)
-    else:
-        logger.warning("Transaction rejected by mempool")
 
     # -------------------------------
-    # Contract Deployment (UNSAFE)
+    # Contract Deployment
     # -------------------------------
 
     logger.info("[3] Smart Contract: Alice deploys a 'Storage' contract")
 
-    # TODO: Replace ContractMachine exec-based runtime with:
-    # - RestrictedPython
-    # - WASM-based VM
-    # - Custom DSL interpreter
     contract_code = """
 # Storage Contract (UNSAFE EXAMPLE)
 if msg['data']:
     storage['value'] = msg['data']
 """
 
-    nonce = claim_nonce(alice_pk) # Use claim_nonce
+    nonce = get_next_nonce(alice_pk)
 
     tx_deploy = Transaction(
         sender=alice_pk,
@@ -197,8 +195,6 @@ if msg['data']:
 
     if mempool.add_transaction(tx_deploy):
         await network.broadcast_transaction(tx_deploy)
-    else:
-        logger.warning("Contract deploy rejected")
 
     # -------------------------------
     # Mine Block 1
@@ -206,7 +202,7 @@ if msg['data']:
 
     logger.info("[4] Consensus: Mining Block 1")
 
-    _, deployed_contracts = mine_and_process_block(chain, mempool, state, pending_nonce_map) # deployed_contracts is a list
+    _, deployed_contracts = mine_and_process_block(chain, mempool, state, pending_nonce_map)
     contract_address = deployed_contracts[0] if deployed_contracts else None
 
     # -------------------------------
@@ -219,7 +215,7 @@ if msg['data']:
         logger.error("Contract not deployed. Skipping interaction.")
         return
 
-    nonce = claim_nonce(bob_pk) # Use claim_nonce
+    nonce = get_next_nonce(bob_pk)
 
     tx_call = Transaction(
         sender=bob_pk,
@@ -232,8 +228,6 @@ if msg['data']:
 
     if mempool.add_transaction(tx_call):
         await network.broadcast_transaction(tx_call)
-    else:
-        logger.warning("Contract call rejected")
 
     # -------------------------------
     # Mine Block 2
@@ -248,9 +242,10 @@ if msg['data']:
     # -------------------------------
 
     logger.info("[7] Final State Check")
+
     alice_acc = state.get_account(alice_pk)
     logger.info("Alice Balance: %s", alice_acc.get("balance", 0) if alice_acc else 0)
-    
+
     bob_acc = state.get_account(bob_pk)
     logger.info("Bob Balance: %s", bob_acc.get("balance", 0) if bob_acc else 0)
 
@@ -260,13 +255,12 @@ if msg['data']:
             logger.info("Contract Storage: %s", contract_acc["storage"])
         else:
             logger.info("Contract storage not found for %s", contract_address)
-    else:
-        logger.info("No contract deployed.")
 
 
 def main():
     logging.basicConfig(level=logging.INFO)
     asyncio.run(node_loop())
+
 
 if __name__ == "__main__":
     main()
