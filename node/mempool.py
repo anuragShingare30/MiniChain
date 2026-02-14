@@ -1,10 +1,15 @@
 from consensus.pow import calculate_hash
+import logging
+import threading
 
+logger = logging.getLogger(__name__)
 
 class Mempool:
-    def __init__(self):
+    def __init__(self, max_size=1000):
         self.pending_txs = []
         self.seen_tx_ids = set()  # Dedup tracking
+        self._lock = threading.Lock()
+        self.max_size = max_size
 
     def _get_tx_id(self, tx):
         """
@@ -21,29 +26,36 @@ class Mempool:
         """
 
         if not tx.verify():
-            print("Mempool: Invalid signature rejected")
+            logger.warning("Mempool: Invalid signature rejected")
             return False
 
-        tx_id = self._get_tx_id(tx)
+        with self._lock:
+            tx_id = self._get_tx_id(tx)
 
-        if tx_id in self.seen_tx_ids:
-            print("Mempool: Duplicate transaction rejected")
-            return False
+            if tx_id in self.seen_tx_ids:
+                logger.warning(f"Mempool: Duplicate transaction rejected {tx_id}")
+                return False
 
-        self.pending_txs.append(tx)
-        self.seen_tx_ids.add(tx_id)
+            if len(self.pending_txs) >= self.max_size:
+                # Simple eviction: drop oldest or reject. Here we reject.
+                logger.warning("Mempool: Full, rejecting transaction")
+                return False
 
-        return True
+            self.pending_txs.append(tx)
+            self.seen_tx_ids.add(tx_id)
+
+            return True
 
     def get_transactions_for_block(self):
         """
         Returns pending transactions and clears the pool.
         """
 
-        txs = self.pending_txs[:]
+        with self._lock:
+            txs = self.pending_txs[:]
 
-        # Clear both list and dedup set to stay in sync
-        self.pending_txs = []
-        self.seen_tx_ids.clear()
+            # Clear both list and dedup set to stay in sync
+            self.pending_txs = []
+            self.seen_tx_ids.clear()
 
-        return txs
+            return txs

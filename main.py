@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import re
 from nacl.signing import SigningKey
 from nacl.encoding import HexEncoder
 
@@ -11,12 +12,65 @@ from consensus import mine_block
 
 logger = logging.getLogger(__name__)
 
+BURN_ADDRESS = "0" * 40
 
 def create_wallet():
     sk = SigningKey.generate()
     pk = sk.verify_key.encode(encoder=HexEncoder).decode()
     return sk, pk
 
+
+def mine_and_process_block(chain, mempool, state, pending_nonce_map):
+    """Helper to mine a block and apply transactions."""
+    pending_txs = mempool.get_transactions_for_block()
+
+    block = Block(
+        index=chain.last_block.index + 1,
+        previous_hash=chain.last_block.hash,
+        transactions=pending_txs,
+    )
+
+    mined_block = mine_block(block)
+    contract_address = None
+
+    if chain.add_block(mined_block):
+        logger.info("Block #%s added", mined_block.index)
+
+        # Credit miner reward
+        miner_attr = getattr(mined_block, "miner", None)
+        if miner_attr:
+            miner_address = miner_attr
+        else:
+            logger.warning("Block has no miner. Crediting treasury.")
+            miner_address = BURN_ADDRESS
+
+        state.credit_mining_reward(miner_address)
+
+        for tx in mined_block.transactions:
+            result = state.apply_transaction(tx)
+
+            # Check for valid contract address (40 hex chars)
+            if isinstance(result, str) and re.match(r'^[0-9a-fA-F]{40}$', result):
+                contract_address = result
+                logger.info("New Contract Deployed at: %s", contract_address)
+                sync_nonce(state, pending_nonce_map, tx.sender)
+            elif result is True:
+                sync_nonce(state, pending_nonce_map, tx.sender)
+            elif result is False or result is None:
+                logger.error("Transaction failed in block %s", mined_block.index)
+                sync_nonce(state, pending_nonce_map, tx.sender)
+
+        return mined_block, contract_address
+    else:
+        logger.error("Block rejected by chain")
+        return None, None
+
+def sync_nonce(state, pending_nonce_map, address):
+    account = state.get_account(address)
+    if account and "nonce" in account:
+        pending_nonce_map[address] = account["nonce"]
+    else:
+        pending_nonce_map[address] = 0
 
 async def node_loop():
     logger.info("Starting MiniChain Node with Smart Contracts")
@@ -27,22 +81,23 @@ async def node_loop():
 
     pending_nonce_map = {}
 
-    # Simplified: state.get_account always returns dict
-    def sync_nonce(address):
-        account = state.get_account(address)
-        pending_nonce_map[address] = account["nonce"]
-
     def get_next_nonce(address):
         account_nonce = state.get_account(address)["nonce"]
         local_nonce = pending_nonce_map.get(address, account_nonce)
         next_nonce = max(account_nonce, local_nonce)
-        pending_nonce_map[address] = next_nonce
         return next_nonce
 
     async def handle_network_data(data):
         logger.info("Received network data: %s", data)
 
     network = P2PNetwork(handle_network_data)
+    
+    try:
+        await _run_node(network, state, chain, mempool, pending_nonce_map, get_next_nonce)
+    finally:
+        await network.stop()
+
+async def _run_node(network, state, chain, mempool, pending_nonce_map, get_next_nonce):
     await network.start()
 
     alice_sk, alice_pk = create_wallet()
@@ -53,7 +108,7 @@ async def node_loop():
 
     logger.info("[1] Genesis: Crediting Alice with 100 coins")
     state.credit_mining_reward(alice_pk, reward=100)
-    sync_nonce(alice_pk)
+    sync_nonce(state, pending_nonce_map, alice_pk)
 
     # -------------------------------
     # Alice Payment
@@ -119,43 +174,7 @@ if msg['data']:
 
     logger.info("[4] Consensus: Mining Block 1")
 
-    pending_txs = mempool.get_transactions_for_block()
-
-    block_1 = Block(
-        index=chain.last_block.index + 1,
-        previous_hash=chain.last_block.hash,
-        transactions=pending_txs,
-    )
-
-    mined_block_1 = mine_block(block_1)
-    contract_address = None
-
-    if chain.add_block(mined_block_1):
-        logger.info("Block #%s added", mined_block_1.index)
-
-        # Credit miner reward
-        miner_address = getattr(mined_block_1, "miner", alice_pk)
-        state.credit_mining_reward(miner_address)
-
-        for tx in mined_block_1.transactions:
-            result = state.apply_transaction(tx)
-
-            if isinstance(result, str):
-                contract_address = result
-                logger.info("New Contract Deployed at: %s...", contract_address[:10])
-                sync_nonce(tx.sender)
-
-            elif result is False or result is None:
-                logger.error(
-                    "Transaction failed in block %s",
-                    mined_block_1.index,
-                )
-                sync_nonce(tx.sender)
-
-            else:
-                sync_nonce(tx.sender)
-    else:
-        logger.error("Block 1 rejected by chain")
+    _, contract_address = mine_and_process_block(chain, mempool, state, pending_nonce_map)
 
     # -------------------------------
     # Bob Interaction
@@ -190,35 +209,7 @@ if msg['data']:
 
     logger.info("[6] Consensus: Mining Block 2")
 
-    pending_txs_2 = mempool.get_transactions_for_block()
-
-    block_2 = Block(
-        index=chain.last_block.index + 1,
-        previous_hash=chain.last_block.hash,
-        transactions=pending_txs_2,
-    )
-
-    mined_block_2 = mine_block(block_2)
-
-    if chain.add_block(mined_block_2):
-        logger.info("Block #%s added", mined_block_2.index)
-
-        miner_address = getattr(mined_block_2, "miner", alice_pk)
-        state.credit_mining_reward(miner_address)
-
-        for tx in mined_block_2.transactions:
-            result = state.apply_transaction(tx)
-
-            if result is False or result is None:
-                logger.error(
-                    "Transaction failed in block %s",
-                    mined_block_2.index,
-                )
-                sync_nonce(tx.sender)
-            else:
-                sync_nonce(tx.sender)
-    else:
-        logger.error("Block 2 rejected by chain")
+    mine_and_process_block(chain, mempool, state, pending_nonce_map)
 
     # -------------------------------
     # Final State

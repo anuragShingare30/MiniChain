@@ -1,6 +1,10 @@
 from nacl.hash import sha256
 from nacl.encoding import HexEncoder
 from core.contract import ContractMachine
+import copy
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 class State:
@@ -21,20 +25,36 @@ class State:
 
     def verify_transaction_logic(self, tx):
         if not tx.verify():
-            print(f"Error: Invalid signature for tx from {tx.sender[:8]}...")
+            logger.error(f"Error: Invalid signature for tx from {tx.sender[:8]}...")
             return False
 
         sender_acc = self.get_account(tx.sender)
 
         if sender_acc['balance'] < tx.amount:
-            print(f"Error: Insufficient balance for {tx.sender[:8]}...")
+            logger.error(f"Error: Insufficient balance for {tx.sender[:8]}...")
             return False
 
         if sender_acc['nonce'] != tx.nonce:
-            print(f"Error: Invalid nonce. Expected {sender_acc['nonce']}, got {tx.nonce}")
+            logger.error(f"Error: Invalid nonce. Expected {sender_acc['nonce']}, got {tx.nonce}")
             return False
 
         return True
+
+    def copy(self):
+        """
+        Return an independent copy of state for transactional validation.
+        """
+        return copy.deepcopy(self)
+
+    def validate_and_apply(self, tx):
+        """
+        Validate and apply a transaction.
+        Returns the same success/failure shape as apply_transaction().
+        NOTE: Delegates to apply_transaction. Callers should use this for
+        semantic validation entry points.
+        TODO: Implement specific semantic validation logic here.
+        """
+        return self.apply_transaction(tx)
 
     def apply_transaction(self, tx):
         """
@@ -60,20 +80,23 @@ class State:
             # Prevent redeploy collision
             existing = self.accounts.get(contract_address)
             if existing and existing.get("code"):
+                # Restore sender state on failure
+                sender['balance'] += tx.amount
+                sender['nonce'] -= 1
                 return False
 
-            return self.create_contract(contract_address, tx.data)
+            return self.create_contract(contract_address, tx.data, initial_balance=tx.amount)
 
         # LOGIC BRANCH 2: Contract Call
-        # If data is provided, treat as contract call
-        if tx.data is not None:
+        # If data is provided (non-empty), treat as contract call
+        if tx.data:
             receiver = self.accounts.get(tx.receiver)
 
             # Fail if contract does not exist or has no code
             if not receiver or not receiver.get("code"):
-                # Rollback sender changes
+                # Rollback sender balance, but nonce remains consumed
                 sender['balance'] += tx.amount
-                sender['nonce'] -= 1
+                # Do NOT rollback nonce
                 return False
 
             # Credit contract balance
@@ -87,10 +110,9 @@ class State:
             )
 
             if not success:
-                # Rollback transfer if execution fails
+                # Rollback transfer if execution fails, nonce remains consumed
                 receiver['balance'] -= tx.amount
                 sender['balance'] += tx.amount
-                sender['nonce'] -= 1
                 return False
 
             return True
@@ -101,12 +123,12 @@ class State:
         return True
 
     def derive_contract_address(self, sender, nonce):
-        raw = f"{sender}{nonce}".encode()
+        raw = f"{sender}:{nonce}".encode()
         return sha256(raw, encoder=HexEncoder).decode()[:40]
 
-    def create_contract(self, contract_address, code):
+    def create_contract(self, contract_address, code, initial_balance=0):
         self.accounts[contract_address] = {
-            'balance': 0,
+            'balance': initial_balance,
             'nonce': 0,
             'code': code,
             'storage': {}
@@ -116,6 +138,8 @@ class State:
     def update_contract_storage(self, address, new_storage):
         if address in self.accounts:
             self.accounts[address]['storage'] = new_storage
+        else:
+            raise KeyError(f"Contract address not found: {address}")
 
     def credit_mining_reward(self, miner_address, reward=50):
         account = self.get_account(miner_address)

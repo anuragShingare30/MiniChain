@@ -14,5 +14,5 @@ setup(
             "minichain=main:main",  # Requires main() function in main.py
         ],
     },
-    python_requires=">=3.8",
+    python_requires=">=3.9",
 )

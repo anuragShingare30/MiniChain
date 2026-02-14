@@ -1,12 +1,10 @@
 import unittest
-import time
 from nacl.signing import SigningKey
 from nacl.encoding import HexEncoder
 
 # Adjust import path to look at root directory
 import sys
 import os
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from core import Transaction, Blockchain, Block, State
 from consensus import mine_block
@@ -65,6 +63,9 @@ class TestCore(unittest.TestCase):
         
         result = self.state.apply_transaction(tx)
         self.assertFalse(result)
+        
+        self.assertEqual(self.state.get_account(self.alice_pk)['balance'], 10)
+        self.assertEqual(self.state.get_account(self.bob_pk)['balance'], 0)
 
 if __name__ == '__main__':
     unittest.main()

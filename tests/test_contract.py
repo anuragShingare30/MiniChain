@@ -2,8 +2,6 @@ import unittest
 import sys
 import os
 
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
 from core import State, Transaction
 from nacl.signing import SigningKey
 from nacl.encoding import HexEncoder
