@@ -1,6 +1,7 @@
 import logging
 import multiprocessing
 import ast
+import sys
 
 logger = logging.getLogger(__name__)
 
@@ -16,8 +17,8 @@ def _safe_exec_worker(code, globals_dict, context_dict, result_queue):
             resource.setrlimit(resource.RLIMIT_CPU, (1, 1))
             # resource.setrlimit(resource.RLIMIT_AS, (100 * 1024 * 1024, 100 * 1024 * 1024))
         except ImportError as e:
-            import sys
-            print(f"Warning: Resource limits not enforced: {e}", file=sys.stderr)
+            logger.error(f"Resource limits not enforced: {e}")
+            raise RuntimeError(f"Resource limits not enforced: {e}")
 
         exec(code, globals_dict, context_dict)
         # Return the updated storage
