@@ -56,7 +56,7 @@ class Blockchain:
                 return False
 
             # Verify block hash
-            if block.hash != calculate_hash(block.to_dict()):
+            if block.hash != calculate_hash(block.to_header_dict()):
                 logger.warning("Block %s rejected: Invalid hash %s", block.index, block.hash)
                 return False
 
