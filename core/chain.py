@@ -15,8 +15,8 @@ class Blockchain:
     def __init__(self):
         self.chain = []
         self.state = State()
-        self._create_genesis_block()
         self._lock = threading.RLock()
+        self._create_genesis_block()
 
     def _create_genesis_block(self):
         """
