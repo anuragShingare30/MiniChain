@@ -109,11 +109,11 @@ class ContractMachine:
                 logger.error("Contract execution timed out")
                 return False
 
-            if queue.empty():
+            try:
+                result = queue.get(timeout=1)
+            except Exception:
                 logger.error("Contract execution crashed without result")
                 return False
-
-            result = queue.get()
             if result["status"] != "success":
                 logger.error(f"Contract Execution Failed: {result.get('error')}")
                 return False
