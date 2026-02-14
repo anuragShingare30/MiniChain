@@ -25,14 +25,12 @@ if msg['data'] == 'increment':
     storage['counter'] = storage.get('counter', 0) + 1
 """
 
-        # Deploy contract
         tx_deploy = Transaction(self.pk, None, 0, 0, data=code)
         tx_deploy.sign(self.sk)
 
         contract_addr = self.state.apply_transaction(tx_deploy)
         self.assertTrue(isinstance(contract_addr, str))
 
-        # Call contract
         tx_call = Transaction(self.pk, contract_addr, 0, 1, data="increment")
         tx_call.sign(self.sk)
 
@@ -57,9 +55,13 @@ if msg['data'] == 'increment':
         self.assertFalse(result)
 
     def test_call_non_existent_contract(self):
-        """Calling unknown contract should fail."""
+        """Calling unknown contract should fail with valid hex receiver."""
 
-        tx = Transaction(self.pk, "nonexistent_address", 0, 0, data="increment")
+        # Generate a syntactically valid public key hex (but not deployed)
+        fake_sk = SigningKey.generate()
+        fake_receiver = fake_sk.verify_key.encode(encoder=HexEncoder).decode()
+
+        tx = Transaction(self.pk, fake_receiver, 0, 0, data="increment")
         tx.sign(self.sk)
 
         result = self.state.apply_transaction(tx)
@@ -72,14 +74,12 @@ if msg['data'] == 'increment':
 raise Exception("boom")
 """
 
-        # Deploy contract
         tx_deploy = Transaction(self.pk, None, 0, 0, data=code)
         tx_deploy.sign(self.sk)
 
         contract_addr = self.state.apply_transaction(tx_deploy)
         self.assertTrue(isinstance(contract_addr, str))
 
-        # Call contract that raises
         tx_call = Transaction(self.pk, contract_addr, 0, 1, data="anything")
         tx_call.sign(self.sk)
 
@@ -90,7 +90,7 @@ raise Exception("boom")
         self.assertEqual(contract_acc["storage"], {})
 
     def test_redeploy_same_address(self):
-        """Redeploying same contract address should fail."""
+        """Force address collision and ensure redeploy fails."""
 
         code = "storage['x'] = 1"
 
@@ -98,12 +98,22 @@ raise Exception("boom")
         tx1 = Transaction(self.pk, None, 0, 0, data=code)
         tx1.sign(self.sk)
 
-        addr = self.state.apply_transaction(tx1)
-        self.assertTrue(isinstance(addr, str))
+        addr1 = self.state.apply_transaction(tx1)
+        self.assertTrue(isinstance(addr1, str))
 
-        # Use correct next nonce to bypass nonce validation
         sender_after = self.state.get_account(self.pk)
         next_nonce = sender_after["nonce"]
+
+        # Compute the address that second deploy WOULD use
+        collision_addr = self.state.derive_contract_address(self.pk, next_nonce)
+
+        # Manually pre-populate state to simulate collision
+        self.state.accounts[collision_addr] = {
+            "balance": 0,
+            "nonce": 0,
+            "code": "existing_code",
+            "storage": {},
+        }
 
         tx2 = Transaction(self.pk, None, 0, next_nonce, data=code)
         tx2.sign(self.sk)
@@ -120,7 +130,6 @@ raise Exception("boom")
 
         code = "storage['x'] = 1"
 
-        # Deploy contract
         tx_deploy = Transaction(self.pk, None, 10, initial_nonce, data=code)
         tx_deploy.sign(self.sk)
 
@@ -131,7 +140,6 @@ raise Exception("boom")
         self.assertEqual(sender_after_deploy["nonce"], initial_nonce + 1)
         self.assertEqual(sender_after_deploy["balance"], initial_balance - 10)
 
-        # Call contract
         tx_call = Transaction(
             self.pk,
             contract_addr,
