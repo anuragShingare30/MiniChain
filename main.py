@@ -12,7 +12,7 @@ from consensus import mine_block
 
 logger = logging.getLogger(__name__)
 
-BURN_ADDRESS = "0" * 40
+TREASURY_ADDRESS = "0" * 40
 
 def create_wallet():
     sk = SigningKey.generate()
@@ -38,11 +38,11 @@ def mine_and_process_block(chain, mempool, state, pending_nonce_map):
 
         # Credit miner reward
         miner_attr = getattr(mined_block, "miner", None)
-        if miner_attr:
+        if miner_attr is not None:
             miner_address = miner_attr
         else:
             logger.warning("Block has no miner. Crediting treasury.")
-            miner_address = BURN_ADDRESS
+            miner_address = TREASURY_ADDRESS
 
         state.credit_mining_reward(miner_address)
 

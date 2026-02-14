@@ -16,7 +16,8 @@ def _safe_exec_worker(code, globals_dict, context_dict, result_queue):
             resource.setrlimit(resource.RLIMIT_CPU, (1, 1))
             # resource.setrlimit(resource.RLIMIT_AS, (100 * 1024 * 1024, 100 * 1024 * 1024))
         except ImportError as e:
-            raise RuntimeError(f"Resource limits not enforced: {e}")
+            import sys
+            print(f"Warning: Resource limits not enforced: {e}", file=sys.stderr)
 
         exec(code, globals_dict, context_dict)
         # Return the updated storage
