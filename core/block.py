@@ -39,7 +39,7 @@ class Block:
         self,
         index: int,
         previous_hash: str,
-        transactions: List[Transaction],
+        transactions: Optional[List[Transaction]] = None,
         timestamp: Optional[float] = None,
         difficulty: Optional[int] = None,
     ):
