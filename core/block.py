@@ -51,7 +51,7 @@ class Block:
         self.timestamp: int = (
             round(time.time() * 1000)
             if timestamp is None
-            else round(timestamp * 1000)
+            else int(timestamp)
         )
 
         self.difficulty: Optional[int] = difficulty
