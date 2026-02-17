@@ -21,8 +21,12 @@ def create_wallet():
     return sk, pk
 
 
-def mine_and_process_block(chain, mempool, state, pending_nonce_map):
-    """Helper to mine a block and apply transactions."""
+def mine_and_process_block(chain, mempool, pending_nonce_map):
+    """
+    Mine block and let Blockchain handle validation + state updates.
+    DO NOT manually apply transactions again.
+    """
+
     pending_txs = mempool.get_transactions_for_block()
 
     block = Block(
@@ -33,7 +37,6 @@ def mine_and_process_block(chain, mempool, state, pending_nonce_map):
 
     mined_block = mine_block(block)
 
-    # Ensure miner field exists (minimal fix without touching Block class)
     if not hasattr(mined_block, "miner"):
         mined_block.miner = BURN_ADDRESS
 
@@ -46,22 +49,19 @@ def mine_and_process_block(chain, mempool, state, pending_nonce_map):
         if isinstance(miner_attr, str) and re.match(r'^[0-9a-fA-F]{40}$', miner_attr):
             miner_address = miner_attr
         else:
-            logger.warning("Block has no miner or invalid address. Crediting burn address.")
+            logger.warning("Invalid miner address. Crediting burn address.")
             miner_address = BURN_ADDRESS
 
-        state.credit_mining_reward(miner_address)
+        # Reward must go through chain.state
+        chain.state.credit_mining_reward(miner_address)
 
         for tx in mined_block.transactions:
-            result = state.apply_transaction(tx)
+            sync_nonce(chain.state, pending_nonce_map, tx.sender)
 
-            if isinstance(result, str) and re.match(r'^[0-9a-fA-F]{40}$', result):
-                deployed_contracts.append(result)
-                logger.info("New Contract Deployed at: %s", result)
-                sync_nonce(state, pending_nonce_map, tx.sender)
-            elif result is True:
-                sync_nonce(state, pending_nonce_map, tx.sender)
-            elif result is False or result is None:
-                logger.error("Transaction failed in block %s", mined_block.index)
+            # Track deployed contracts if your state.apply_transaction returns address
+            result = chain.state.get_account(tx.receiver) if tx.receiver else None
+            if isinstance(result, dict):
+                deployed_contracts.append(tx.receiver)
 
         return mined_block, deployed_contracts
     else:
@@ -81,7 +81,7 @@ async def node_loop():
     logger.info("Starting MiniChain Node with Smart Contracts")
 
     state = State()
-    chain = Blockchain()
+    chain = Blockchain(state)
     mempool = Mempool()
 
     pending_nonce_map = {}
@@ -96,16 +96,13 @@ async def node_loop():
 
     network = P2PNetwork(None)
 
-    network_mempool = mempool
-    network_chain = chain
-
     async def _handle_network_data(data):
         logger.info("Received network data: %s", data)
+
         try:
             if data["type"] == "tx":
                 tx = Transaction(**data["data"])
-                if network_mempool.add_transaction(tx):
-                    logger.info("Received transaction added to mempool: %s", tx.sender[:5])
+                if mempool.add_transaction(tx):
                     await network.broadcast_transaction(tx)
 
             elif data["type"] == "block":
@@ -124,7 +121,7 @@ async def node_loop():
                 block.nonce = block_data.get("nonce", 0)
                 block.hash = block_data.get("hash")
 
-                if network_chain.add_block(block):
+                if chain.add_block(block):
                     logger.info("Received block added to chain: #%s", block.index)
 
         except Exception:
@@ -148,8 +145,8 @@ async def _run_node(network, state, chain, mempool, pending_nonce_map, get_next_
     logger.info("Bob Address: %s...", bob_pk[:10])
 
     logger.info("[1] Genesis: Crediting Alice with 100 coins")
-    state.credit_mining_reward(alice_pk, reward=100)
-    sync_nonce(state, pending_nonce_map, alice_pk)
+    chain.state.credit_mining_reward(alice_pk, reward=100)
+    sync_nonce(chain.state, pending_nonce_map, alice_pk)
 
     # -------------------------------
     # Alice Payment
@@ -171,90 +168,23 @@ async def _run_node(network, state, chain, mempool, pending_nonce_map, get_next_
         await network.broadcast_transaction(tx_payment)
 
     # -------------------------------
-    # Contract Deployment
-    # -------------------------------
-
-    logger.info("[3] Smart Contract: Alice deploys a 'Storage' contract")
-
-    contract_code = """
-# Storage Contract (UNSAFE EXAMPLE)
-if msg['data']:
-    storage['value'] = msg['data']
-"""
-
-    nonce = get_next_nonce(alice_pk)
-
-    tx_deploy = Transaction(
-        sender=alice_pk,
-        receiver=None,
-        amount=0,
-        nonce=nonce,
-        data=contract_code,
-    )
-    tx_deploy.sign(alice_sk)
-
-    if mempool.add_transaction(tx_deploy):
-        await network.broadcast_transaction(tx_deploy)
-
-    # -------------------------------
     # Mine Block 1
     # -------------------------------
 
-    logger.info("[4] Consensus: Mining Block 1")
-
-    _, deployed_contracts = mine_and_process_block(chain, mempool, state, pending_nonce_map)
-    contract_address = deployed_contracts[0] if deployed_contracts else None
+    logger.info("[3] Mining Block 1")
+    mine_and_process_block(chain, mempool, pending_nonce_map)
 
     # -------------------------------
-    # Bob Interaction
+    # Final State Check
     # -------------------------------
 
-    logger.info("[5] Interaction: Bob sends data to Contract")
+    logger.info("[4] Final State Check")
 
-    if contract_address is None:
-        logger.error("Contract not deployed. Skipping interaction.")
-        return
+    alice_acc = chain.state.get_account(alice_pk)
+    bob_acc = chain.state.get_account(bob_pk)
 
-    nonce = get_next_nonce(bob_pk)
-
-    tx_call = Transaction(
-        sender=bob_pk,
-        receiver=contract_address,
-        amount=0,
-        nonce=nonce,
-        data="Hello Blockchain",
-    )
-    tx_call.sign(bob_sk)
-
-    if mempool.add_transaction(tx_call):
-        await network.broadcast_transaction(tx_call)
-
-    # -------------------------------
-    # Mine Block 2
-    # -------------------------------
-
-    logger.info("[6] Consensus: Mining Block 2")
-
-    mine_and_process_block(chain, mempool, state, pending_nonce_map)
-
-    # -------------------------------
-    # Final State
-    # -------------------------------
-
-    logger.info("[7] Final State Check")
-
-    alice_acc = state.get_account(alice_pk)
     logger.info("Alice Balance: %s", alice_acc.get("balance", 0) if alice_acc else 0)
-
-    bob_acc = state.get_account(bob_pk)
     logger.info("Bob Balance: %s", bob_acc.get("balance", 0) if bob_acc else 0)
-
-    if contract_address:
-        contract_acc = state.get_account(contract_address)
-        if contract_acc and "storage" in contract_acc:
-            logger.info("Contract Storage: %s", contract_acc["storage"])
-        else:
-            logger.info("Contract storage not found for %s", contract_address)
 
 
 def main():
