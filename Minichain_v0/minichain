@@ -1,0 +1,54 @@
+#!/bin/bash
+#
+# MiniChain v0 - Simple Node Launcher
+# Usage:
+#   ./minichain start 8000           # Start bootstrap node
+#   ./minichain start 8001 8000      # Start peer connecting to port 8000
+#   ./minichain clean                # Remove all wallet files
+#
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+cd "$SCRIPT_DIR"
+
+# Activate virtual environment if exists
+if [ -d "venv" ]; then
+    source venv/bin/activate
+fi
+
+case "$1" in
+    start)
+        PORT="${2:-8000}"
+        if [ -n "$3" ]; then
+            python3 main.py --port "$PORT" --connect "localhost:$3"
+        else
+            python3 main.py --port "$PORT"
+        fi
+        ;;
+    clean)
+        rm -f wallet_*.key
+        echo "✅ All wallet files removed"
+        ;;
+    help|--help|-h|"")
+        echo ""
+        echo "╔════════════════════════════════════════════════════════╗"
+        echo "║              🔗 MINICHAIN v0 LAUNCHER                  ║"
+        echo "╠════════════════════════════════════════════════════════╣"
+        echo "║                                                        ║"
+        echo "║  USAGE:                                                ║"
+        echo "║    ./minichain start <port> [connect_port]             ║"
+        echo "║    ./minichain clean                                   ║"
+        echo "║    ./minichain help                                    ║"
+        echo "║                                                        ║"
+        echo "║  EXAMPLES:                                             ║"
+        echo "║    ./minichain start 8000        # Bootstrap node      ║"
+        echo "║    ./minichain start 8001 8000   # Connect to 8000     ║"
+        echo "║    ./minichain start 8002 8000   # Another peer        ║"
+        echo "║                                                        ║"
+        echo "╚════════════════════════════════════════════════════════╝"
+        echo ""
+        ;;
+    *)
+        echo "Unknown command: $1"
+        echo "Run './minichain help' for usage"
+        ;;
+esac

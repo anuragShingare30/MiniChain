@@ -1,0 +1,10 @@
+# Wallet keys (private keys - never commit!)
+*.key
+
+# Python
+venv/
+__pycache__/
+*.pyc
+
+# Environment
+.env
