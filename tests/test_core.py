@@ -2,7 +2,7 @@ import unittest
 from nacl.signing import SigningKey
 from nacl.encoding import HexEncoder
 
-from core import Transaction, Blockchain, State # Removed unused imports
+from minichain import Transaction, Blockchain, State
 
 class TestCore(unittest.TestCase):
     def setUp(self):
@@ -21,7 +21,8 @@ class TestCore(unittest.TestCase):
         """Check if genesis block is created correctly."""
         self.assertEqual(len(self.chain.chain), 1)
         self.assertEqual(self.chain.last_block.index, 0)
-        self.assertEqual(self.chain.last_block.previous_hash, "0")
+        # Genesis block has 64-character zero hash (compatible with Minichain_v0)
+        self.assertEqual(self.chain.last_block.previous_hash, "0" * 64)
 
     def test_transaction_signature(self):
         """Check that valid signatures pass and invalid ones fail."""

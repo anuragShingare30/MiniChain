@@ -1,4 +1,4 @@
-from consensus.pow import calculate_hash
+from minichain.pow import calculate_hash
 import logging
 import threading
 
@@ -60,3 +60,19 @@ class Mempool:
             self._seen_tx_ids.difference_update(confirmed_ids)
 
             return txs
+
+    def remove_transaction(self, tx):
+        """
+        Remove a specific transaction from the pool (e.g., when included in a block from peer).
+        """
+        tx_id = self._get_tx_id(tx)
+        
+        with self._lock:
+            # Remove from seen set
+            self._seen_tx_ids.discard(tx_id)
+            
+            # Remove from pending list
+            self._pending_txs = [
+                t for t in self._pending_txs 
+                if self._get_tx_id(t) != tx_id
+            ]

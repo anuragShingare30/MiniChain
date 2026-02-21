@@ -2,7 +2,8 @@ import time
 import hashlib
 import json
 from typing import List, Optional
-from core.transaction import Transaction
+from minichain.transaction import Transaction, create_genesis_tx
+from minichain.config import GENESIS_TIMESTAMP, TREASURY_ADDRESS, TREASURY_BALANCE
 
 
 def _sha256(data: str) -> str:
@@ -103,3 +104,37 @@ class Block:
             sort_keys=True
         )
         return _sha256(header_string)
+
+    @staticmethod
+    def from_dict(data: dict) -> "Block":
+        """Create block from dictionary."""
+        txs = [Transaction.from_dict(tx) for tx in data.get("transactions", [])]
+        block = Block(
+            index=data["index"],
+            previous_hash=data["previous_hash"],
+            transactions=txs,
+            timestamp=data.get("timestamp"),
+            difficulty=data.get("difficulty"),
+        )
+        block.nonce = data.get("nonce", 0)
+        block.hash = data.get("hash")
+        return block
+
+    def __repr__(self):
+        return f"Block(#{self.index}, txs={len(self.transactions)}, hash={self.hash[:8] if self.hash else 'None'})"
+
+
+def create_genesis_block() -> "Block":
+    """Create the genesis (first) block with treasury funds."""
+    genesis_txs = [create_genesis_tx(TREASURY_ADDRESS, TREASURY_BALANCE)]
+
+    block = Block(
+        index=0,
+        previous_hash="0" * 64,
+        transactions=genesis_txs,
+        timestamp=GENESIS_TIMESTAMP * 1000,  # Convert to ms
+        difficulty=None,
+    )
+    block.nonce = 0
+    block.hash = block.compute_hash()
+    return block

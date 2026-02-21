@@ -1,6 +1,7 @@
 from nacl.hash import sha256
 from nacl.encoding import HexEncoder
-from core.contract import ContractMachine
+from minichain.contract import ContractMachine
+from minichain.transaction import COINBASE_SENDER
 import copy
 import logging
 
@@ -15,6 +16,32 @@ class State:
 
     DEFAULT_MINING_REWARD = 50
 
+    # =========================================================================
+    # BASIC ACCOUNT METHODS (compatible with Minichain_v0)
+    # =========================================================================
+
+    def get_balance(self, address: str) -> int:
+        """Get account balance (0 if account doesn't exist)."""
+        return self.accounts.get(address, {"balance": 0})["balance"]
+
+    def get_nonce(self, address: str) -> int:
+        """Get account nonce (0 if account doesn't exist)."""
+        return self.accounts.get(address, {"nonce": 0})["nonce"]
+
+    def exists(self, address: str) -> bool:
+        """Check if account exists."""
+        return address in self.accounts
+
+    def create_account(self, address: str, balance: int = 0):
+        """Create new account with given balance."""
+        if address not in self.accounts:
+            self.accounts[address] = {
+                "balance": balance,
+                "nonce": 0,
+                "code": None,
+                "storage": {}
+            }
+
     def get_account(self, address):
         if address not in self.accounts:
             self.accounts[address] = {
@@ -24,6 +51,74 @@ class State:
                 'storage': {}
             }
         return self.accounts[address]
+
+    # =========================================================================
+    # TRANSACTION APPLICATION
+    # =========================================================================
+
+    def apply_tx(self, tx) -> "State":
+        """
+        Apply transaction to state (compatible with Minichain_v0).
+        Returns self for chaining. Raises ValueError if transaction is invalid.
+        """
+        # Coinbase transaction: just create/credit receiver account
+        if tx.sender == COINBASE_SENDER:
+            self.create_account(tx.receiver, 0)
+            self.accounts[tx.receiver]["balance"] += tx.amount
+            return self
+
+        # Validate signature
+        if not tx.verify():
+            raise ValueError("Invalid signature")
+
+        # Validate sender exists
+        if not self.exists(tx.sender):
+            raise ValueError(f"Sender {tx.sender[:8]} does not exist")
+
+        # Validate nonce (prevents replay attacks)
+        expected_nonce = self.get_nonce(tx.sender)
+        if tx.nonce != expected_nonce:
+            raise ValueError(f"Bad nonce: expected {expected_nonce}, got {tx.nonce}")
+
+        # Validate balance
+        if self.get_balance(tx.sender) < tx.amount:
+            raise ValueError("Insufficient balance")
+
+        # Apply changes
+        self.accounts[tx.sender]["balance"] -= tx.amount
+        self.accounts[tx.sender]["nonce"] += 1
+
+        # Handle contract deployment (receiver is None)
+        if tx.receiver is None or tx.receiver == "":
+            if tx.data:
+                contract_address = self.derive_contract_address(tx.sender, tx.nonce)
+                self.create_contract(contract_address, tx.data, initial_balance=tx.amount)
+            return self
+
+        # Create receiver if needed
+        if not self.exists(tx.receiver):
+            self.create_account(tx.receiver)
+
+        # Handle contract call
+        if tx.data and self.accounts.get(tx.receiver, {}).get("code"):
+            self.accounts[tx.receiver]["balance"] += tx.amount
+            success = self.contract_machine.execute(
+                contract_address=tx.receiver,
+                sender_address=tx.sender,
+                payload=tx.data,
+                amount=tx.amount
+            )
+            if not success:
+                # Rollback
+                self.accounts[tx.receiver]["balance"] -= tx.amount
+                self.accounts[tx.sender]["balance"] += tx.amount
+                self.accounts[tx.sender]["nonce"] -= 1
+                raise ValueError("Contract execution failed")
+            return self
+
+        # Regular transfer
+        self.accounts[tx.receiver]["balance"] += tx.amount
+        return self
 
     def verify_transaction_logic(self, tx):
         if not tx.verify():

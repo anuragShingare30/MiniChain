@@ -1,8 +1,12 @@
 import json
 import time
+import hashlib
 from nacl.signing import SigningKey, VerifyKey
 from nacl.encoding import HexEncoder
 from nacl.exceptions import BadSignatureError, CryptoError
+
+# Coinbase sender address (for genesis and mining rewards)
+COINBASE_SENDER = "0" * 64
 
 
 class Transaction:
@@ -26,6 +30,23 @@ class Transaction:
             "signature": self.signature,
         }
 
+    @staticmethod
+    def from_dict(data: dict) -> "Transaction":
+        """Create transaction from dictionary."""
+        return Transaction(
+            sender=data["sender"],
+            receiver=data["receiver"],
+            amount=data["amount"],
+            nonce=data["nonce"],
+            data=data.get("data"),
+            signature=data.get("signature"),
+            timestamp=data.get("timestamp") / 1000 if data.get("timestamp") else None,
+        )
+
+    def hash(self) -> str:
+        """Get unique hash of this transaction."""
+        return hashlib.sha256(self.hash_payload).hexdigest()
+
     @property
     def hash_payload(self):
         """Returns the bytes to be signed."""
@@ -46,7 +67,21 @@ class Transaction:
         signed = signing_key.sign(self.hash_payload)
         self.signature = signed.signature.hex()
 
+    def sign_with_hex(self, private_key_hex: str):
+        """Sign transaction with hex-encoded private key."""
+        signing_key = SigningKey(private_key_hex.encode(), encoder=HexEncoder)
+        signed = signing_key.sign(self.hash_payload)
+        self.signature = signed.signature.hex()
+
+    def is_coinbase(self) -> bool:
+        """Check if this is a coinbase (genesis/reward) transaction."""
+        return self.sender == COINBASE_SENDER
+
     def verify(self):
+        # Coinbase transactions (genesis, mining rewards) need no signature
+        if self.is_coinbase():
+            return True
+
         if not self.signature:
             return False
 
@@ -61,3 +96,32 @@ class Transaction:
             # - Malformed public key hex
             # - Invalid hex in signature
             return False
+
+    def __repr__(self):
+        return f"Tx({self.sender[:8]}→{(self.receiver or 'CONTRACT')[:8]}, {self.amount})"
+
+
+from minichain.config import GENESIS_TIMESTAMP
+
+
+def create_genesis_tx(receiver: str, amount: int) -> Transaction:
+    """Create a genesis transaction (no signature needed)."""
+    return Transaction(
+        sender=COINBASE_SENDER,
+        receiver=receiver,
+        amount=amount,
+        nonce=0,
+        signature=None,
+        timestamp=GENESIS_TIMESTAMP,  # Deterministic timestamp
+    )
+
+
+def create_coinbase_tx(miner_address: str, reward: int, block_index: int) -> Transaction:
+    """Create a coinbase (mining reward) transaction."""
+    return Transaction(
+        sender=COINBASE_SENDER,
+        receiver=miner_address,
+        amount=reward,
+        nonce=block_index,  # Use block index as nonce to ensure uniqueness
+        signature=None,
+    )
