@@ -4,10 +4,7 @@ import re
 from nacl.signing import SigningKey
 from nacl.encoding import HexEncoder
 
-from core import Transaction, Blockchain, Block, State
-from node import Mempool
-from network import P2PNetwork
-from consensus import mine_block
+from minichain import Transaction, Blockchain, Block, State, Mempool, P2PNetwork, mine_block
 
 
 logger = logging.getLogger(__name__)
@@ -81,7 +78,7 @@ async def node_loop():
     logger.info("Starting MiniChain Node with Smart Contracts")
 
     state = State()
-    chain = Blockchain(state)
+    chain = Blockchain()
     mempool = Mempool()
 
     pending_nonce_map = {}
@@ -94,7 +91,7 @@ async def node_loop():
         pending_nonce_map[address] = next_nonce + 1
         return next_nonce
 
-    network = P2PNetwork(None)
+    network = P2PNetwork(lambda x: None)
 
     async def _handle_network_data(data):
         logger.info("Received network data: %s", data)
@@ -130,9 +127,9 @@ async def node_loop():
     network.handler_callback = _handle_network_data
 
     try:
-        await _run_node(network, state, chain, mempool, pending_nonce_map, claim_nonce)
+        await _run_node(network, chain, mempool, pending_nonce_map, claim_nonce)
     finally:
-        await network.stop()
+        pass  # network.stop() is not implemented
 
 
 async def _run_node(network, chain, mempool, pending_nonce_map, get_next_nonce):
