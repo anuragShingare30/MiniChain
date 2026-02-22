@@ -29,6 +29,13 @@ class P2PNetwork:
         logger.info("Network: Listening on /ip4/0.0.0.0/tcp/0")
         # In real libp2p, we would await host.start() here
 
+    async def stop(self):
+        """Clean up network resources cleanly upon shutdown."""
+        logger.info("Network: Shutting down")
+        if self.pubsub:
+            # Assuming a mock/real pubsub might need closing in the future
+            self.pubsub = None
+
     async def _broadcast_message(self, topic, msg_type, payload):
         msg = json.dumps({"type": msg_type, "data": payload})
         if self.pubsub:

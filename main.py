@@ -82,7 +82,7 @@ async def node_loop():
 
     pending_nonce_map = {}
 
-    def claim_nonce(address):
+    def claim_nonce(address) -> int:
         account = chain.state.get_account(address)
         account_nonce = account.get("nonce", 0) if account else 0
         local_nonce = pending_nonce_map.get(address, account_nonce)
@@ -128,7 +128,7 @@ async def node_loop():
     try:
         await _run_node(network, chain, mempool, pending_nonce_map, claim_nonce)
     finally:
-        pass  # network.stop() is not implemented
+        await network.stop()
 
 
 async def _run_node(network, chain, mempool, pending_nonce_map, get_next_nonce):
