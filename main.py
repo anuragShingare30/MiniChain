@@ -90,7 +90,7 @@ async def node_loop():
         pending_nonce_map[address] = next_nonce + 1
         return next_nonce
 
-    network = P2PNetwork(lambda _: None)
+    network = P2PNetwork()
 
     async def _handle_network_data(data):
         logger.info("Received network data: %s", data)
@@ -123,7 +123,7 @@ async def node_loop():
         except Exception:
             logger.exception("Error processing network data: %s", data)
 
-    network.handler_callback = _handle_network_data
+    network.register_handler(_handle_network_data)
 
     try:
         await _run_node(network, chain, mempool, pending_nonce_map, claim_nonce)
