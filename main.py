@@ -77,21 +77,20 @@ def sync_nonce(state, pending_nonce_map, address):
 async def node_loop():
     logger.info("Starting MiniChain Node with Smart Contracts")
 
-    state = State()
     chain = Blockchain()
     mempool = Mempool()
 
     pending_nonce_map = {}
 
     def claim_nonce(address):
-        account = state.get_account(address)
+        account = chain.state.get_account(address)
         account_nonce = account.get("nonce", 0) if account else 0
         local_nonce = pending_nonce_map.get(address, account_nonce)
         next_nonce = max(account_nonce, local_nonce)
         pending_nonce_map[address] = next_nonce + 1
         return next_nonce
 
-    network = P2PNetwork(lambda x: None)
+    network = P2PNetwork(lambda _: None)
 
     async def _handle_network_data(data):
         logger.info("Received network data: %s", data)
