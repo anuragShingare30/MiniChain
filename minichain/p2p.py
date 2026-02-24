@@ -30,6 +30,7 @@ class P2PNetwork:
         self._server: asyncio.Server | None = None
         self._port: int = 0
         self._listen_tasks: list[asyncio.Task] = []
+        self._on_peer_connected = None  # callback(writer) called when a new peer connects
 
     def register_handler(self, handler_callback):
         if not callable(handler_callback):
@@ -69,7 +70,7 @@ class P2PNetwork:
     # Peer connections
     # ------------------------------------------------------------------
 
-    async def connect_to_peer(self, host: str, port: int):
+    async def connect_to_peer(self, host: str, port: int) -> bool:
         """Actively connect to another MiniChain node."""
         try:
             reader, writer = await asyncio.open_connection(host, port)
@@ -77,8 +78,10 @@ class P2PNetwork:
             task = asyncio.create_task(self._listen_to_peer(reader, writer, f"{host}:{port}"))
             self._listen_tasks.append(task)
             logger.info("Network: Connected to peer %s:%d", host, port)
+            return True
         except Exception as e:
             logger.error("Network: Failed to connect to %s:%d — %s", host, port, e)
+            return False
 
     async def _handle_incoming(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
         """Accept an incoming peer connection."""
@@ -88,6 +91,12 @@ class P2PNetwork:
         self._peers.append((reader, writer))
         task = asyncio.create_task(self._listen_to_peer(reader, writer, addr))
         self._listen_tasks.append(task)
+        # Send current state to the new peer
+        if self._on_peer_connected:
+            try:
+                await self._on_peer_connected(writer)
+            except Exception:
+                logger.exception("Network: Error during peer sync")
 
     async def _listen_to_peer(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter, addr: str):
         """Read newline-delimited JSON messages from a peer."""

@@ -82,7 +82,16 @@ def make_network_handler(chain, mempool):
         msg_type = data.get("type")
         payload = data.get("data")
 
-        if msg_type == "tx":
+        if msg_type == "sync":
+            # Merge remote state into local state (for accounts we don't have yet)
+            remote_accounts = payload.get("accounts", {})
+            for addr, acc in remote_accounts.items():
+                if addr not in chain.state.accounts:
+                    chain.state.accounts[addr] = acc
+                    logger.info("🔄 Synced account %s... (balance=%d)", addr[:12], acc.get("balance", 0))
+            logger.info("🔄 State sync complete — %d accounts", len(chain.state.accounts))
+
+        elif msg_type == "tx":
             tx = Transaction(**payload)
             if mempool.add_transaction(tx):
                 logger.info("📥 Received tx from %s... (amount=%s)", tx.sender[:8], tx.amount)
@@ -112,7 +121,7 @@ def make_network_handler(chain, mempool):
                 # Drain matching txs from mempool so they aren't re-mined
                 mempool.get_transactions_for_block()
             else:
-                logger.warning("📥 Received Block #%s — rejected", getattr(block, "index", "?"))
+                logger.warning("📥 Received Block #%s — rejected", block.index)
 
     return handler
 
@@ -250,6 +259,19 @@ async def run_node(port: int, connect_to: str | None, fund: int):
 
     handler = make_network_handler(chain, mempool)
     network.register_handler(handler)
+
+    # When a new peer connects, send our state so they can sync
+    async def on_peer_connected(writer):
+        import json as _json
+        sync_msg = _json.dumps({
+            "type": "sync",
+            "data": {"accounts": chain.state.accounts}
+        }) + "\n"
+        writer.write(sync_msg.encode())
+        await writer.drain()
+        logger.info("🔄 Sent state sync to new peer")
+
+    network._on_peer_connected = on_peer_connected
 
     await network.start(port=port)
 
