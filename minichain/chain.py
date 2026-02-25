@@ -66,9 +66,18 @@ class Blockchain:
                 return False
 
             # Verify block hash
-            if block.hash != calculate_hash(block.to_header_dict()):
+            computed_hash = calculate_hash(block.to_header_dict())
+            if block.hash != computed_hash:
                 logger.warning("Block %s rejected: Invalid hash %s", block.index, block.hash)
                 return False
+
+            # Verify proof-of-work meets difficulty target
+            difficulty = block.difficulty or 0
+            if difficulty > 0:
+                required_prefix = "0" * difficulty
+                if not computed_hash.startswith(required_prefix):
+                    logger.warning("Block %s rejected: Hash does not meet difficulty %d", block.index, difficulty)
+                    return False
 
             # Validate transactions on a temporary state copy
             temp_state = self.state.copy()
@@ -150,6 +159,14 @@ class Blockchain:
                     logger.warning("Chain validation failed: Invalid hash at block %d", i)
                     return False
 
+                # Verify proof-of-work meets difficulty target
+                difficulty = block_data.get("difficulty", 0) or 0
+                if difficulty > 0:
+                    required_prefix = "0" * difficulty
+                    if not computed_hash.startswith(required_prefix):
+                        logger.warning("Chain validation failed: Hash does not meet difficulty %d at block %d", difficulty, i)
+                        return False
+
                 # Validate and apply transactions
                 for tx in transactions:
                     if not temp_state.validate_and_apply(tx):
@@ -175,10 +192,18 @@ class Blockchain:
             True if chain was replaced, False otherwise
         """
         with self._lock:
-            # Only replace if longer
-            if len(chain_data) <= len(self.chain):
-                logger.info("Received chain not longer than ours (%d <= %d)", 
+            # Only replace if longer (or equal during initial sync)
+            if len(chain_data) < len(self.chain):
+                logger.info("Received chain shorter than ours (%d < %d)", 
                            len(chain_data), len(self.chain))
+                return False
+            
+            # If equal length, only replace if it validates (essentially a no-op for same chain)
+            if len(chain_data) == len(self.chain):
+                # Validate but don't bother replacing if identical
+                if self.validate_chain(chain_data):
+                    logger.debug("Received chain same length as ours and valid")
+                    return True  # Consider it a successful sync
                 return False
 
             # Validate the received chain
@@ -186,22 +211,20 @@ class Blockchain:
                 logger.warning("Received chain failed validation")
                 return False
 
-            # Rebuild chain and state from scratch
+            # Build new chain and state locally for atomic replacement
             logger.info("Replacing chain: %d -> %d blocks", len(self.chain), len(chain_data))
             
-            # Clear and rebuild
-            self.chain = []
-            self.state = State()
+            new_chain = []
+            new_state = State()
             
             # Add genesis
-            genesis_data = chain_data[0]
             genesis_block = Block(
                 index=0,
                 previous_hash="0",
                 transactions=[]
             )
             genesis_block.hash = self.GENESIS_HASH
-            self.chain.append(genesis_block)
+            new_chain.append(genesis_block)
 
             # Add each subsequent block
             for i in range(1, len(chain_data)):
@@ -218,11 +241,17 @@ class Blockchain:
                 block.nonce = block_data.get("nonce", 0)
                 block.hash = block_data.get("hash")
 
-                # Apply transactions to state
+                # Apply transactions to new state
                 for tx in transactions:
-                    self.state.validate_and_apply(tx)
+                    if not new_state.validate_and_apply(tx):
+                        logger.warning("Chain rebuild failed: Invalid tx in block %d", i)
+                        return False
 
-                self.chain.append(block)
+                new_chain.append(block)
+
+            # Atomically assign new chain and state
+            self.chain = new_chain
+            self.state = new_state
 
             logger.info("Chain replaced successfully. New height: %d", len(self.chain))
             return True
