@@ -3,7 +3,8 @@ import logging
 import asyncio
 import struct
 import uuid
-from typing import Dict, Set, Optional, Callable, Any
+from collections import OrderedDict
+from typing import Dict, Optional, Callable, Any
 
 logger = logging.getLogger(__name__)
 
@@ -39,7 +40,12 @@ class Peer:
             length = struct.unpack('>I', header)[0]
             
             if length > MAX_MESSAGE_SIZE:
-                logger.warning("Message too large from %s: %d bytes", self.address, length)
+                logger.warning("Message too large from %s: %d bytes, closing connection", self.address, length)
+                self.writer.close()
+                try:
+                    await self.writer.wait_closed()
+                except Exception:
+                    pass
                 return None
             
             data = await self.reader.readexactly(length)
@@ -80,7 +86,7 @@ class P2PNetwork:
             self.register_handler(handler_callback)
         
         self.peers: Dict[str, Peer] = {}  # node_id -> Peer
-        self.seen_messages: Set[str] = set()  # For broadcast deduplication
+        self.seen_messages: OrderedDict[str, None] = OrderedDict()  # For broadcast deduplication (ordered for proper eviction)
         self._server: Optional[asyncio.Server] = None
         self._running: bool = False
         self._tasks: list = []
@@ -141,7 +147,10 @@ class P2PNetwork:
             logger.info("Node %s connecting to %s...", self.node_id, address)
             reader, writer = await asyncio.open_connection(host, port)
             
-            # Send HELLO
+            # Create temporary peer for handshake
+            temp_peer = Peer(node_id="pending", reader=reader, writer=writer, address=address)
+            
+            # Send HELLO using Peer.send
             hello_msg = {
                 "type": "hello",
                 "data": {
@@ -149,20 +158,19 @@ class P2PNetwork:
                     "port": self.port
                 }
             }
-            data = json.dumps(hello_msg).encode('utf-8')
-            header = struct.pack('>I', len(data))
-            writer.write(header + data)
-            await writer.drain()
+            await temp_peer.send(hello_msg)
             
-            # Wait for HELLO response
-            resp_header = await asyncio.wait_for(reader.readexactly(HEADER_SIZE), timeout=5.0)
-            length = struct.unpack('>I', resp_header)[0]
-            resp_data = await asyncio.wait_for(reader.readexactly(length), timeout=5.0)
-            response = json.loads(resp_data.decode('utf-8'))
+            # Wait for HELLO response using Peer.receive with timeout
+            try:
+                response = await asyncio.wait_for(temp_peer.receive(), timeout=5.0)
+            except asyncio.TimeoutError:
+                logger.warning("Timeout waiting for HELLO response from %s", address)
+                temp_peer.close()
+                return False
             
-            if response.get("type") != "hello":
+            if response is None or response.get("type") != "hello":
                 logger.warning("Invalid response from %s", address)
-                writer.close()
+                temp_peer.close()
                 return False
             
             peer_node_id = response["data"]["node_id"]
@@ -170,20 +178,21 @@ class P2PNetwork:
             # Check for self-connection
             if peer_node_id == self.node_id:
                 logger.warning("Detected self-connection, closing")
-                writer.close()
+                temp_peer.close()
                 return False
             
             # Check for duplicate connection
             if peer_node_id in self.peers:
                 logger.info("Already connected to %s", peer_node_id)
-                writer.close()
+                temp_peer.close()
                 return True
             
-            peer = Peer(peer_node_id, reader, writer, address)
-            self.peers[peer_node_id] = peer
+            # Update peer with actual node_id and register
+            temp_peer.node_id = peer_node_id
+            self.peers[peer_node_id] = temp_peer
             
             # Start listening for messages from this peer
-            task = asyncio.create_task(self._listen_to_peer(peer))
+            task = asyncio.create_task(self._listen_to_peer(temp_peer))
             self._tasks.append(task)
             
             logger.info("Node %s connected to peer %s at %s", self.node_id, peer_node_id, address)
@@ -198,16 +207,21 @@ class P2PNetwork:
         address = writer.get_extra_info('peername')
         address_str = f"{address[0]}:{address[1]}" if address else "unknown"
         
+        # Create temporary peer for handshake
+        temp_peer = Peer(node_id="pending", reader=reader, writer=writer, address=address_str)
+        
         try:
-            # Wait for HELLO
-            header = await asyncio.wait_for(reader.readexactly(HEADER_SIZE), timeout=10.0)
-            length = struct.unpack('>I', header)[0]
-            data = await asyncio.wait_for(reader.readexactly(length), timeout=10.0)
-            message = json.loads(data.decode('utf-8'))
+            # Wait for HELLO using Peer.receive with timeout
+            try:
+                message = await asyncio.wait_for(temp_peer.receive(), timeout=10.0)
+            except asyncio.TimeoutError:
+                logger.warning("Timeout waiting for HELLO from %s", address_str)
+                temp_peer.close()
+                return
             
-            if message.get("type") != "hello":
-                logger.warning("Expected HELLO from %s, got %s", address_str, message.get("type"))
-                writer.close()
+            if message is None or message.get("type") != "hello":
+                logger.warning("Expected HELLO from %s, got %s", address_str, message.get("type") if message else None)
+                temp_peer.close()
                 return
             
             peer_node_id = message["data"]["node_id"]
@@ -215,16 +229,16 @@ class P2PNetwork:
             # Check for self-connection
             if peer_node_id == self.node_id:
                 logger.warning("Detected self-connection from %s, closing", address_str)
-                writer.close()
+                temp_peer.close()
                 return
             
             # Check for duplicate
             if peer_node_id in self.peers:
                 logger.info("Duplicate connection from %s, closing new one", peer_node_id)
-                writer.close()
+                temp_peer.close()
                 return
             
-            # Send HELLO response
+            # Send HELLO response using Peer.send
             hello_resp = {
                 "type": "hello",
                 "data": {
@@ -232,25 +246,20 @@ class P2PNetwork:
                     "port": self.port
                 }
             }
-            resp_data = json.dumps(hello_resp).encode('utf-8')
-            resp_header = struct.pack('>I', len(resp_data))
-            writer.write(resp_header + resp_data)
-            await writer.drain()
+            await temp_peer.send(hello_resp)
             
-            peer = Peer(peer_node_id, reader, writer, address_str)
-            self.peers[peer_node_id] = peer
+            # Update peer with actual node_id and register
+            temp_peer.node_id = peer_node_id
+            self.peers[peer_node_id] = temp_peer
             
             logger.info("Node %s accepted connection from peer %s", self.node_id, peer_node_id)
             
             # Listen for messages
-            await self._listen_to_peer(peer)
+            await self._listen_to_peer(temp_peer)
             
-        except asyncio.TimeoutError:
-            logger.warning("Timeout waiting for HELLO from %s", address_str)
-            writer.close()
         except Exception as e:
             logger.error("Error handling connection from %s: %s", address_str, e)
-            writer.close()
+            temp_peer.close()
 
     async def _listen_to_peer(self, peer: Peer):
         """Listen for messages from a peer."""
@@ -270,7 +279,6 @@ class P2PNetwork:
     async def _process_message(self, message: dict, sender: Peer):
         """Process an incoming message."""
         msg_type = message.get("type")
-        msg_data = message.get("data", {})
         
         # Generate message ID for deduplication
         msg_id = self._get_message_id(message)
@@ -280,14 +288,14 @@ class P2PNetwork:
             return
         
         if msg_id:
-            self.seen_messages.add(msg_id)
-            # Limit seen set size
-            if len(self.seen_messages) > 10000:
-                self.seen_messages = set(list(self.seen_messages)[-5000:])
+            self.seen_messages[msg_id] = None
+            # Limit seen dict size - evict oldest entries
+            while len(self.seen_messages) > 10000:
+                self.seen_messages.popitem(last=False)  # Remove oldest
         
         # Handle internal message types
         if msg_type == "get_chain":
-            # Respond with chain (handled by callback)
+            # No-op here: actual chain response is handled by _handler_callback
             pass
         
         # Forward to registered handler
@@ -319,7 +327,7 @@ class P2PNetwork:
         """
         msg_id = self._get_message_id(message)
         if msg_id:
-            self.seen_messages.add(msg_id)
+            self.seen_messages[msg_id] = None
         
         for node_id, peer in list(self.peers.items()):
             if node_id == exclude_peer:
@@ -341,15 +349,18 @@ class P2PNetwork:
         message = {"type": "block", "data": block.to_dict()}
         await self.broadcast(message)
 
-    async def request_chain(self, peer: Peer) -> Optional[list]:
-        """Request the full chain from a peer."""
+    async def request_chain(self, peer: Peer) -> None:
+        """
+        Request the full chain from a peer.
+        
+        This method only sends a "get_chain" request. The actual chain
+        is delivered asynchronously via the message handler callback
+        that processes incoming "chain" messages.
+        """
         try:
             await peer.send({"type": "get_chain", "data": {}})
-            # Response will be handled by the message callback
-            return None
         except Exception as e:
             logger.error("Failed to request chain from %s: %s", peer.node_id, e)
-            return None
 
     async def send_chain(self, peer: Peer, chain_data: list):
         """Send the full chain to a peer."""
@@ -365,19 +376,3 @@ class P2PNetwork:
     def get_peer_ids(self) -> list:
         """Return list of connected peer node_ids."""
         return list(self.peers.keys())
-
-
-# Legacy compatibility - handle_message interface for tests
-async def _legacy_handle_message(self, msg):
-    """Legacy callback interface for backward compatibility."""
-    if not hasattr(msg, "data"):
-        raise TypeError("Incoming message missing 'data' attribute")
-    
-    if not isinstance(msg.data, (bytes, bytearray)):
-        raise TypeError("msg.data must be bytes")
-    
-    data = json.loads(msg.data.decode('utf-8'))
-    
-    if self._handler_callback:
-        await self._handler_callback(data, None)
-
