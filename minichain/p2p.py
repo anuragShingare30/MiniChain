@@ -113,7 +113,8 @@ class P2PNetwork:
 
                 if self._handler_callback:
                     try:
-                        await self._handler_callback(data)
+                        # Pass writer so handler can respond directly to sender
+                        await self._handler_callback(data, writer)
                     except Exception:
                         logger.exception("Network: Handler error for message from %s", addr)
         except asyncio.CancelledError:
@@ -161,6 +162,31 @@ class P2PNetwork:
     async def broadcast_block(self, block):
         logger.info("Network: Broadcasting Block #%d", block.index)
         await self._broadcast_raw({"type": "block", "data": block.to_dict()})
+
+    async def request_chain(self):
+        """Request the full chain from all connected peers."""
+        logger.info("Network: Requesting chain from %d peer(s)...", len(self._peers))
+        await self._broadcast_raw({"type": "get_chain", "data": {}})
+
+    async def send_chain(self, writer: asyncio.StreamWriter, chain_data: list):
+        """Send the full chain to a specific peer."""
+        try:
+            payload = {"type": "chain", "data": chain_data}
+            line = (json.dumps(payload) + "\n").encode()
+            writer.write(line)
+            await writer.drain()
+            logger.info("Network: Sent chain (%d blocks) to peer", len(chain_data))
+        except Exception as e:
+            logger.error("Network: Failed to send chain: %s", e)
+
+    async def send_to_peer(self, writer: asyncio.StreamWriter, payload: dict):
+        """Send a message to a specific peer."""
+        try:
+            line = (json.dumps(payload) + "\n").encode()
+            writer.write(line)
+            await writer.drain()
+        except Exception as e:
+            logger.error("Network: Failed to send to peer: %s", e)
 
     @property
     def peer_count(self) -> int:

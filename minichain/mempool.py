@@ -60,3 +60,16 @@ class Mempool:
             self._seen_tx_ids.difference_update(confirmed_ids)
 
             return txs
+
+    def get_pending_transactions(self):
+        """
+        Returns a copy of pending transactions without clearing the pool.
+        Used for inspection/display purposes.
+        """
+        with self._lock:
+            return self._pending_txs[:]
+
+    def size(self):
+        """Returns the number of pending transactions."""
+        with self._lock:
+            return len(self._pending_txs)

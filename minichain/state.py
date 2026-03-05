@@ -14,6 +14,7 @@ class State:
         self.contract_machine = ContractMachine(self)
 
     DEFAULT_MINING_REWARD = 50
+    COINBASE_ADDRESS = "0" * 40  # Special address for coinbase transactions
 
     def get_account(self, address):
         if address not in self.accounts:
@@ -26,6 +27,10 @@ class State:
         return self.accounts[address]
 
     def verify_transaction_logic(self, tx):
+        # Coinbase transactions don't need signature/balance/nonce validation
+        if tx.sender == self.COINBASE_ADDRESS:
+            return True
+
         if not tx.verify():
             logger.error(f"Error: Invalid signature for tx from {tx.sender[:8]}...")
             return False
@@ -73,6 +78,12 @@ class State:
         """
         if not self.verify_transaction_logic(tx):
             return False
+
+        # Coinbase transactions only credit the receiver, no deduction from sender
+        if tx.sender == self.COINBASE_ADDRESS:
+            receiver = self.get_account(tx.receiver)
+            receiver['balance'] += tx.amount
+            return True
 
         sender = self.accounts[tx.sender]
 
@@ -148,6 +159,19 @@ class State:
             self.accounts[address]['storage'] = new_storage
         else:
             raise KeyError(f"Contract address not found: {address}")
+
+    def update_contract_storage_partial(self, address, updates):
+        if address not in self.accounts:
+            raise KeyError(f"Contract address not found: {address}")
+        if isinstance(updates, dict):
+            self.accounts[address]['storage'].update(updates)
+        else:
+            raise ValueError("Updates must be a dictionary")
+
+    def credit_mining_reward(self, miner_address, reward=None):
+        reward = reward if reward is not None else self.DEFAULT_MINING_REWARD
+        account = self.get_account(miner_address)
+        account['balance'] += reward
 
     def update_contract_storage_partial(self, address, updates):
         if address not in self.accounts:
