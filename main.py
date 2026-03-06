@@ -92,6 +92,7 @@ def make_network_handler(chain, mempool):
 
         if msg_type == "sync":
             peer_host = peer_addr.rsplit(":", 1)[0] if ":" in peer_addr else peer_addr
+            peer_host = peer_host.strip("[]")
             is_trusted = peer_addr in TRUSTED_PEERS or peer_host in TRUSTED_PEERS
             is_localhost = peer_host in LOCALHOST_PEERS
             if chain.state.accounts and not (is_trusted or is_localhost):
