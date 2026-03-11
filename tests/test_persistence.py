@@ -168,6 +168,7 @@ class TestPersistence(unittest.TestCase):
 
         contract = restored.state.get_account(contract_addr)
         self.assertEqual(contract["code"], code)
+        self.assertEqual(contract["storage"]["hits"], 1)
 
 
 if __name__ == "__main__":
