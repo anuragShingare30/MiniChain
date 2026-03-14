@@ -49,7 +49,7 @@ def create_wallet():
 
 def mine_and_process_block(chain, mempool, miner_pk):
     """Mine pending transactions into a new block."""
-    pending_txs = mempool.get_transactions_for_block(chain.state)
+    pending_txs = mempool.get_transactions_for_block()
     if not pending_txs:
         logger.info("Mempool is empty — nothing to mine.")
         return None
@@ -64,6 +64,7 @@ def mine_and_process_block(chain, mempool, miner_pk):
 
     if chain.add_block(mined_block):
         logger.info("✅ Block #%d mined and added (%d txs)", mined_block.index, len(pending_txs))
+        mempool.remove_transactions(pending_txs)
         chain.state.credit_mining_reward(miner_pk)
         return mined_block
     else:

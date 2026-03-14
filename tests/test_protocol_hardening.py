@@ -23,7 +23,7 @@ class TestDeterministicConsensus(unittest.TestCase):
         self.assertEqual(block.compute_hash(), calculate_hash(block.to_header_dict()))
 
 
-class TestMempoolNonceQueues(unittest.TestCase):
+class TestMempoolQueue(unittest.TestCase):
     def setUp(self):
         self.state = State()
         self.sender_sk = SigningKey.generate()
@@ -31,7 +31,7 @@ class TestMempoolNonceQueues(unittest.TestCase):
         self.receiver_pk = SigningKey.generate().verify_key.encode(encoder=HexEncoder).decode()
         self.state.credit_mining_reward(self.sender_pk, 100)
 
-    def _signed_tx(self, nonce, amount=1, timestamp=None):
+    def _signed_tx(self, nonce, amount=1, timestamp=None) -> Transaction:
         tx = Transaction(
             sender=self.sender_pk,
             receiver=self.receiver_pk,
@@ -42,38 +42,31 @@ class TestMempoolNonceQueues(unittest.TestCase):
         tx.sign(self.sender_sk)
         return tx
 
-    def test_ready_transactions_preserve_sender_nonce_order(self):
+    def test_transactions_for_block_are_sorted_and_capped(self):
         mempool = Mempool()
-        late_tx = self._signed_tx(1, timestamp=2000)
-        early_tx = self._signed_tx(0, timestamp=1000)
+        for nonce in range(mempool.transactions_per_block + 5):
+            self.assertTrue(mempool.add_transaction(self._signed_tx(nonce, timestamp=5000 - nonce)))
 
-        self.assertTrue(mempool.add_transaction(late_tx))
-        self.assertTrue(mempool.add_transaction(early_tx))
+        selected = mempool.get_transactions_for_block()
 
-        selected = mempool.get_transactions_for_block(self.state)
+        self.assertEqual(len(selected), mempool.transactions_per_block)
+        self.assertEqual(len(mempool), mempool.transactions_per_block + 5)
+        self.assertEqual(
+            [tx.timestamp for tx in selected],
+            sorted(tx.timestamp for tx in selected),
+        )
 
-        self.assertEqual([tx.nonce for tx in selected], [0, 1])
-        self.assertEqual(len(mempool), 0)
-
-    def test_gap_transactions_stay_waiting(self):
+    def test_same_nonce_replaces_pending_transaction(self):
         mempool = Mempool()
-        ready_tx = self._signed_tx(0, timestamp=1000)
-        waiting_tx = self._signed_tx(2, timestamp=3000)
+        original_tx = self._signed_tx(0, amount=1, timestamp=1000)
+        replacement_tx = self._signed_tx(0, amount=2, timestamp=2000)
 
-        self.assertTrue(mempool.add_transaction(ready_tx))
-        self.assertTrue(mempool.add_transaction(waiting_tx))
+        self.assertTrue(mempool.add_transaction(original_tx))
+        self.assertTrue(mempool.add_transaction(replacement_tx))
 
-        selected = mempool.get_transactions_for_block(self.state)
-
-        self.assertEqual([tx.nonce for tx in selected], [0])
-        self.assertEqual(len(mempool), 1)
-
-        self.state.apply_transaction(ready_tx)
-        middle_tx = self._signed_tx(1, timestamp=2000)
-        self.assertTrue(mempool.add_transaction(middle_tx))
-
-        selected = mempool.get_transactions_for_block(self.state)
-        self.assertEqual([tx.nonce for tx in selected], [1, 2])
+        selected = mempool.get_transactions_for_block()
+        self.assertEqual(len(selected), 1)
+        self.assertEqual(selected[0].amount, 2)
 
     def test_remove_transactions_keeps_other_pending(self):
         mempool = Mempool()
@@ -83,8 +76,21 @@ class TestMempoolNonceQueues(unittest.TestCase):
         self.assertTrue(mempool.add_transaction(tx0))
         self.assertTrue(mempool.add_transaction(tx1))
         mempool.remove_transactions([tx0])
+        selected = mempool.get_transactions_for_block()
 
         self.assertEqual(len(mempool), 1)
+        self.assertEqual(len(selected), 1)
+        self.assertEqual(selected[0].tx_id, tx1.tx_id)
+
+    def test_remove_transactions_by_sender_nonce_when_tx_id_differs(self):
+        mempool = Mempool()
+        local_tx = self._signed_tx(0, amount=1, timestamp=1000)
+        remote_confirmed_tx = self._signed_tx(0, amount=2, timestamp=2000)
+
+        self.assertTrue(mempool.add_transaction(local_tx))
+        mempool.remove_transactions([remote_confirmed_tx])
+
+        self.assertEqual(len(mempool), 0)
 
 
 class TestP2PValidationAndDedup(unittest.IsolatedAsyncioTestCase):
