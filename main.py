@@ -98,8 +98,8 @@ def make_network_handler(chain, mempool):
                 logger.info("📥 Received tx from %s... (amount=%s)", tx.sender[:8], tx.amount)
 
         elif msg_type == "block":
-            txs_raw = payload.pop("transactions", [])
-            block_hash = payload.pop("hash", None)
+            txs_raw = payload.get("transactions", [])
+            block_hash = payload.get("hash")
             transactions = [Transaction(**t) for t in txs_raw]
 
             block = Block(
@@ -148,7 +148,11 @@ HELP_TEXT = """
 """
 
 
-async def cli_loop(sk, pk, chain, mempool, network, nonce_counter):
+def _is_valid_receiver(receiver):
+    return bool(re.fullmatch(r"[0-9a-fA-F]{40}|[0-9a-fA-F]{64}", receiver))
+
+
+async def cli_loop(sk, pk, chain, mempool, network):
     """Read commands from stdin asynchronously."""
     loop = asyncio.get_event_loop()
     print(HELP_TEXT)
@@ -180,18 +184,23 @@ async def cli_loop(sk, pk, chain, mempool, network, nonce_counter):
                 print("  Usage: send <receiver_address> <amount>")
                 continue
             receiver = parts[1]
+            if not _is_valid_receiver(receiver):
+                print("  Invalid receiver format. Expected 40 or 64 hex characters.")
+                continue
             try:
                 amount = int(parts[2])
             except ValueError:
                 print("  Amount must be an integer.")
                 continue
+            if amount <= 0:
+                print("  Amount must be greater than 0.")
+                continue
 
-            nonce = nonce_counter[0]
+            nonce = chain.state.get_account(pk).get("nonce", 0)
             tx = Transaction(sender=pk, receiver=receiver, amount=amount, nonce=nonce)
             tx.sign(sk)
 
             if mempool.add_transaction(tx):
-                nonce_counter[0] += 1
                 await network.broadcast_transaction(tx)
                 print(f"  ✅ Tx sent: {amount} coins → {receiver[:12]}...")
             else:
@@ -202,9 +211,6 @@ async def cli_loop(sk, pk, chain, mempool, network, nonce_counter):
             mined = mine_and_process_block(chain, mempool, pk)
             if mined:
                 await network.broadcast_block(mined, miner=pk)
-                # Sync local nonce from chain state
-                acc = chain.state.get_account(pk)
-                nonce_counter[0] = acc.get("nonce", 0)
 
         # ── peers ──
         elif cmd == "peers":
@@ -289,11 +295,8 @@ async def run_node(port: int, connect_to: str | None, fund: int):
         except ValueError:
             logger.error("Invalid --connect format. Use host:port")
 
-    # Nonce counter kept as a mutable list so the CLI closure can mutate it
-    nonce_counter = [0]
-
     try:
-        await cli_loop(sk, pk, chain, mempool, network, nonce_counter)
+        await cli_loop(sk, pk, chain, mempool, network)
     finally:
         await network.stop()
 
