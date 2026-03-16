@@ -178,12 +178,12 @@ class TestPersistence(unittest.TestCase):
 
         restored = load(path=self.tmpdir)
 
-        # Build a second transfer using the SAME alice key
-        alice_sk, new_pk = _make_keypair()
+        # Build a second transfer using a new key
+        new_sk, new_pk = _make_keypair()
         restored.state.credit_mining_reward(new_pk, 50)
 
         tx2 = Transaction(new_pk, bob_pk, 10, 0)
-        tx2.sign(alice_sk)
+        tx2.sign(new_sk)
 
         block2 = Block(
             index=len(restored.chain),

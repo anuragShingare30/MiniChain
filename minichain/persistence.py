@@ -19,6 +19,7 @@ import json
 import os
 import tempfile
 import logging
+import copy
 
 from .block import Block
 from .transaction import Transaction
@@ -47,7 +48,7 @@ def save(blockchain: Blockchain, path: str = ".") -> None:
 
     with blockchain._lock:  # Thread-safe: hold lock while serialising
         chain_data = [block.to_dict() for block in blockchain.chain]
-        state_data = blockchain.state.accounts.copy()
+        state_data = copy.deepcopy(blockchain.state.accounts)
 
     snapshot = {
         "chain": chain_data,
@@ -165,8 +166,10 @@ def _atomic_write_json(filepath: str, data) -> None:
         if hasattr(os, "O_DIRECTORY"):
             try:
                 dir_fd = os.open(dir_name, os.O_RDONLY | os.O_DIRECTORY)
-                os.fsync(dir_fd)
-                os.close(dir_fd)
+                try:
+                    os.fsync(dir_fd)
+                finally:
+                    os.close(dir_fd)
             except OSError:
                 pass  # Directory fsync not supported on all platforms
 
