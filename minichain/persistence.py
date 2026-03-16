@@ -28,8 +28,7 @@ from .pow import calculate_hash
 
 logger = logging.getLogger(__name__)
 
-_CHAIN_FILE = "blockchain.json"
-_STATE_FILE = "state.json"
+_DATA_FILE = "data.json"
 
 
 # ---------------------------------------------------------------------------
@@ -38,10 +37,11 @@ _STATE_FILE = "state.json"
 
 def save(blockchain: Blockchain, path: str = ".") -> None:
     """
-    Persist the blockchain and account state to JSON files inside *path*.
+    Persist the blockchain and account state to a JSON file inside *path*.
 
-    Uses atomic write (write-to-temp → rename) so a crash mid-save
-    never corrupts the existing file.
+    Uses atomic write (write-to-temp → rename) with fsync so a crash mid-save
+    never corrupts the existing file. Chain and state are saved together to
+    prevent torn snapshots.
     """
     os.makedirs(path, exist_ok=True)
 
@@ -49,8 +49,12 @@ def save(blockchain: Blockchain, path: str = ".") -> None:
         chain_data = [block.to_dict() for block in blockchain.chain]
         state_data = blockchain.state.accounts.copy()
 
-    _atomic_write_json(os.path.join(path, _CHAIN_FILE), chain_data)
-    _atomic_write_json(os.path.join(path, _STATE_FILE), state_data)
+    snapshot = {
+        "chain": chain_data,
+        "state": state_data
+    }
+
+    _atomic_write_json(os.path.join(path, _DATA_FILE), snapshot)
 
     logger.info(
         "Saved %d blocks and %d accounts to '%s'",
@@ -62,27 +66,30 @@ def save(blockchain: Blockchain, path: str = ".") -> None:
 
 def load(path: str = ".") -> Blockchain:
     """
-    Restore a Blockchain from JSON files inside *path*.
+    Restore a Blockchain from the JSON file inside *path*.
 
     Steps:
-      1. Load and deserialise blocks from blockchain.json
+      1. Load and deserialise blocks from data.json
       2. Verify chain integrity (genesis, linkage, hashes)
-      3. Load account state from state.json
+      3. Load account state
 
     Raises:
-        FileNotFoundError: if blockchain.json or state.json is missing.
+        FileNotFoundError: if data.json is missing.
         ValueError:        if data is invalid or integrity checks fail.
     """
-    chain_path = os.path.join(path, _CHAIN_FILE)
-    state_path = os.path.join(path, _STATE_FILE)
+    data_path = os.path.join(path, _DATA_FILE)
+    snapshot = _read_json(data_path)
 
-    raw_blocks = _read_json(chain_path)
-    raw_accounts = _read_json(state_path)
+    if not isinstance(snapshot, dict):
+        raise ValueError(f"Invalid snapshot data in '{data_path}'")
+
+    raw_blocks = snapshot.get("chain")
+    raw_accounts = snapshot.get("state")
 
     if not isinstance(raw_blocks, list) or not raw_blocks:
-        raise ValueError(f"Invalid or empty chain data in '{chain_path}'")
+        raise ValueError(f"Invalid or empty chain data in '{data_path}'")
     if not isinstance(raw_accounts, dict):
-        raise ValueError(f"Invalid accounts data in '{state_path}'")
+        raise ValueError(f"Invalid accounts data in '{data_path}'")
 
     blocks = [_deserialize_block(b) for b in raw_blocks]
 
@@ -144,13 +151,25 @@ def _verify_chain_integrity(blocks: list) -> None:
 # ---------------------------------------------------------------------------
 
 def _atomic_write_json(filepath: str, data) -> None:
-    """Write JSON atomically: temp file -> os.replace (crash-safe)."""
+    """Write JSON atomically with fsync for durability."""
     dir_name = os.path.dirname(filepath) or "."
     fd, tmp_path = tempfile.mkstemp(dir=dir_name, suffix=".tmp")
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2)
-        os.replace(tmp_path, filepath)   # atomic on all platforms
+            f.flush()
+            os.fsync(f.fileno())  # Ensure data is on disk
+        os.replace(tmp_path, filepath)   # Atomic rename
+
+        # Attempt to fsync the directory so the rename is durable
+        if hasattr(os, "O_DIRECTORY"):
+            try:
+                dir_fd = os.open(dir_name, os.O_RDONLY | os.O_DIRECTORY)
+                os.fsync(dir_fd)
+                os.close(dir_fd)
+            except OSError:
+                pass  # Directory fsync not supported on all platforms
+
     except BaseException:
         try:
             os.unlink(tmp_path)

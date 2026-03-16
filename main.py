@@ -279,13 +279,17 @@ async def run_node(port: int, connect_to: str | None, fund: int, datadir: str | 
 
     # Load existing chain from disk, or start fresh
     chain = None
-    if datadir and os.path.exists(os.path.join(datadir, "blockchain.json")):
+    if datadir and os.path.exists(os.path.join(datadir, "data.json")):
         try:
             from minichain.persistence import load
             chain = load(datadir)
             logger.info("Restored chain from '%s'", datadir)
-        except (FileNotFoundError, ValueError) as e:
+        except FileNotFoundError as e:
             logger.warning("Could not load saved chain: %s — starting fresh", e)
+        except ValueError as e:
+            logger.error("State data is corrupted or tampered: %s", e)
+            logger.error("Refusing to start to avoid overwriting corrupted data.")
+            sys.exit(1)
 
     if chain is None:
         chain = Blockchain()
@@ -329,9 +333,12 @@ async def run_node(port: int, connect_to: str | None, fund: int, datadir: str | 
     finally:
         # Save chain to disk on shutdown
         if datadir:
-            from minichain.persistence import save
-            save(chain, datadir)
-            logger.info("Chain saved to '%s'", datadir)
+            try:
+                from minichain.persistence import save
+                save(chain, datadir)
+                logger.info("Chain saved to '%s'", datadir)
+            except Exception as e:
+                logger.error("Failed to save chain during shutdown: %s", e)
         await network.stop()
 
 

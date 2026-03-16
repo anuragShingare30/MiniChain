@@ -54,11 +54,10 @@ class TestPersistence(unittest.TestCase):
 
     # --- Basic save/load ---
 
-    def test_save_creates_files(self):
+    def test_save_creates_file(self):
         bc = Blockchain()
         save(bc, path=self.tmpdir)
-        self.assertTrue(os.path.exists(os.path.join(self.tmpdir, "blockchain.json")))
-        self.assertTrue(os.path.exists(os.path.join(self.tmpdir, "state.json")))
+        self.assertTrue(os.path.exists(os.path.join(self.tmpdir, "data.json")))
 
     def test_chain_length_preserved(self):
         bc, _, _ = self._chain_with_tx()
@@ -126,10 +125,10 @@ class TestPersistence(unittest.TestCase):
         save(bc, path=self.tmpdir)
 
         # Tamper with block hash
-        chain_path = os.path.join(self.tmpdir, "blockchain.json")
+        chain_path = os.path.join(self.tmpdir, "data.json")
         with open(chain_path, "r") as f:
             data = json.load(f)
-        data[1]["hash"] = "deadbeef" * 8
+        data["chain"][1]["hash"] = "deadbeef" * 8
         with open(chain_path, "w") as f:
             json.dump(data, f)
 
@@ -141,10 +140,10 @@ class TestPersistence(unittest.TestCase):
         bc, _, _ = self._chain_with_tx()
         save(bc, path=self.tmpdir)
 
-        chain_path = os.path.join(self.tmpdir, "blockchain.json")
+        chain_path = os.path.join(self.tmpdir, "data.json")
         with open(chain_path, "r") as f:
             data = json.load(f)
-        data[1]["previous_hash"] = "0" * 64 + "ff"
+        data["chain"][1]["previous_hash"] = "0" * 64 + "ff"
         with open(chain_path, "w") as f:
             json.dump(data, f)
 
@@ -159,7 +158,7 @@ class TestPersistence(unittest.TestCase):
         save(bc, path=self.tmpdir)
 
         # Corrupt the file
-        chain_path = os.path.join(self.tmpdir, "blockchain.json")
+        chain_path = os.path.join(self.tmpdir, "data.json")
         with open(chain_path, "w") as f:
             f.write('{"truncated": ')  # invalid JSON
 
