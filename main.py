@@ -19,6 +19,7 @@ Commands (type in the terminal while the node is running):
 import argparse
 import asyncio
 import logging
+import os
 import re
 import sys
 
@@ -26,6 +27,7 @@ from nacl.signing import SigningKey
 from nacl.encoding import HexEncoder
 
 from minichain import Transaction, Blockchain, Block, State, Mempool, P2PNetwork, mine_block
+from minichain.validators import is_valid_receiver
 
 
 logger = logging.getLogger(__name__)
@@ -56,16 +58,36 @@ def mine_and_process_block(chain, mempool, miner_pk):
         logger.info("Mempool is empty — nothing to mine.")
         return None
 
+    # Filter queue candidates against a temporary state snapshot.
+    temp_state = chain.state.copy()
+    mineable_txs = []
+    stale_txs = []
+    for tx in pending_txs:
+        expected_nonce = temp_state.get_account(tx.sender).get("nonce", 0)
+        if tx.nonce < expected_nonce:
+            stale_txs.append(tx)
+            continue
+        if temp_state.validate_and_apply(tx):
+            mineable_txs.append(tx)
+
+    if stale_txs:
+        mempool.remove_transactions(stale_txs)
+
+    if not mineable_txs:
+        logger.info("No mineable transactions in current queue window.")
+        return None
+
     block = Block(
         index=chain.last_block.index + 1,
         previous_hash=chain.last_block.hash,
-        transactions=pending_txs,
+        transactions=mineable_txs,
     )
 
     mined_block = mine_block(block)
 
     if chain.add_block(mined_block):
-        logger.info("✅ Block #%d mined and added (%d txs)", mined_block.index, len(pending_txs))
+        logger.info("✅ Block #%d mined and added (%d txs)", mined_block.index, len(mineable_txs))
+        mempool.remove_transactions(mineable_txs)
         chain.state.credit_mining_reward(miner_pk)
         return mined_block
     else:
@@ -120,8 +142,8 @@ def make_network_handler(chain, mempool):
                 logger.info("📥 Received tx from %s... (amount=%s)", tx.sender[:8], tx.amount)
 
         elif msg_type == "block":
-            txs_raw = payload.pop("transactions", [])
-            block_hash = payload.pop("hash", None)
+            txs_raw = payload.get("transactions", [])
+            block_hash = payload.get("hash")
             transactions = [Transaction(**t) for t in txs_raw]
 
             block = Block(
@@ -141,8 +163,8 @@ def make_network_handler(chain, mempool):
                 miner = payload.get("miner", BURN_ADDRESS)
                 chain.state.credit_mining_reward(miner)
 
-                # Drain matching txs from mempool so they aren't re-mined
-                mempool.get_transactions_for_block()
+                # Drop only confirmed transactions so higher nonces can remain queued.
+                mempool.remove_transactions(block.transactions)
             else:
                 logger.warning("📥 Received Block #%s — rejected", block.index)
 
@@ -170,7 +192,7 @@ HELP_TEXT = """
 """
 
 
-async def cli_loop(sk, pk, chain, mempool, network, nonce_counter):
+async def cli_loop(sk, pk, chain, mempool, network):
     """Read commands from stdin asynchronously."""
     loop = asyncio.get_event_loop()
     print(HELP_TEXT)
@@ -202,18 +224,23 @@ async def cli_loop(sk, pk, chain, mempool, network, nonce_counter):
                 print("  Usage: send <receiver_address> <amount>")
                 continue
             receiver = parts[1]
+            if not is_valid_receiver(receiver):
+                print("  Invalid receiver format. Expected 40 or 64 hex characters.")
+                continue
             try:
                 amount = int(parts[2])
             except ValueError:
                 print("  Amount must be an integer.")
                 continue
+            if amount <= 0:
+                print("  Amount must be greater than 0.")
+                continue
 
-            nonce = nonce_counter[0]
+            nonce = chain.state.get_account(pk).get("nonce", 0)
             tx = Transaction(sender=pk, receiver=receiver, amount=amount, nonce=nonce)
             tx.sign(sk)
 
             if mempool.add_transaction(tx):
-                nonce_counter[0] += 1
                 await network.broadcast_transaction(tx)
                 print(f"  ✅ Tx sent: {amount} coins → {receiver[:12]}...")
             else:
@@ -223,10 +250,7 @@ async def cli_loop(sk, pk, chain, mempool, network, nonce_counter):
         elif cmd == "mine":
             mined = mine_and_process_block(chain, mempool, pk)
             if mined:
-                await network.broadcast_block(mined)
-                # Sync local nonce from chain state
-                acc = chain.state.get_account(pk)
-                nonce_counter[0] = acc.get("nonce", 0)
+                await network.broadcast_block(mined, miner=pk)
 
         # ── peers ──
         elif cmd == "peers":
@@ -276,11 +300,27 @@ async def cli_loop(sk, pk, chain, mempool, network, nonce_counter):
 # Main entry point
 # ──────────────────────────────────────────────
 
-async def run_node(port: int, connect_to: str | None, fund: int, host: str = "127.0.0.1"):
+async def run_node(port: int, connect_to: str | None, fund: int, datadir: str | None):
     """Boot the node, optionally connect to a peer, then enter the CLI."""
     sk, pk = create_wallet()
 
-    chain = Blockchain()
+    # Load existing chain from disk, or start fresh
+    chain = None
+    if datadir and os.path.exists(os.path.join(datadir, "data.json")):
+        try:
+            from minichain.persistence import load
+            chain = load(datadir)
+            logger.info("Restored chain from '%s'", datadir)
+        except FileNotFoundError as e:
+            logger.warning("Could not load saved chain: %s — starting fresh", e)
+        except ValueError as e:
+            logger.error("State data is corrupted or tampered: %s", e)
+            logger.error("Refusing to start to avoid overwriting corrupted data.")
+            sys.exit(1)
+
+    if chain is None:
+        chain = Blockchain()
+
     mempool = Mempool()
     network = P2PNetwork()
 
@@ -319,8 +359,16 @@ async def run_node(port: int, connect_to: str | None, fund: int, host: str = "12
     nonce_counter = [0]
 
     try:
-        await cli_loop(sk, pk, chain, mempool, network, nonce_counter)
+        await cli_loop(sk, pk, chain, mempool, network)
     finally:
+        # Save chain to disk on shutdown
+        if datadir:
+            try:
+                from minichain.persistence import save
+                save(chain, datadir)
+                logger.info("Chain saved to '%s'", datadir)
+            except Exception as e:
+                logger.error("Failed to save chain during shutdown: %s", e)
         await network.stop()
 
 
@@ -330,6 +378,7 @@ def main():
     parser.add_argument("--port", type=int, default=9000, help="TCP port to listen on (default: 9000)")
     parser.add_argument("--connect", type=str, default=None, help="Peer address to connect to (host:port)")
     parser.add_argument("--fund", type=int, default=100, help="Initial coins to fund this wallet (default: 100)")
+    parser.add_argument("--datadir", type=str, default=None, help="Directory to save/load blockchain state (enables persistence)")
     args = parser.parse_args()
 
     logging.basicConfig(
@@ -339,7 +388,7 @@ def main():
     )
 
     try:
-        asyncio.run(run_node(args.port, args.connect, args.fund, args.host))
+        asyncio.run(run_node(args.port, args.connect, args.fund, args.datadir))
     except KeyboardInterrupt:
         print("\nNode shut down.")
 
