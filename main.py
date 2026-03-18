@@ -161,7 +161,7 @@ HELP_TEXT = """
 ║  send <to> <amount>   - send coins             ║
 ║  mine                 - mine a block           ║
 ║  peers                - show connected peers   ║
-║  connect <host>:<port> - connect to a peer      ║
+║  connect <host>:<port> - connect to a peer     ║
 ║  address              - show your public key   ║
 ║  chain                - show chain summary     ║
 ║  help                 - show this help         ║
