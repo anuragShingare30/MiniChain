@@ -47,15 +47,18 @@ class P2PNetwork:
         """Start listening for incoming peer connections on the given port."""
         self._port = port
         self._server = await asyncio.start_server(
-            self._handle_incoming, "0.0.0.0", port
+            self._handle_incoming, host, port
         )
-        logger.info("Network: Listening on 0.0.0.0:%d", port)
+        logger.info("Network: Listening on %s:%d", host, port)
 
     async def stop(self):
         """Gracefully shut down the server and disconnect all peers."""
         logger.info("Network: Shutting down")
         for task in self._listen_tasks:
             task.cancel()
+        if self._listen_tasks:
+            await asyncio.gather(*self._listen_tasks, return_exceptions=True)
+        self._listen_tasks.clear()
         for _, writer in self._peers:
             try:
                 writer.close()
@@ -262,6 +265,8 @@ class P2PNetwork:
                 except (json.JSONDecodeError, UnicodeDecodeError):
                     logger.warning("Network: Malformed message from %s", addr)
                     continue
+                if isinstance(data, dict):
+                    data["_peer_addr"] = addr
 
                 if not self._validate_message(data):
                     logger.warning("Network: Invalid message schema from %s", addr)
@@ -305,7 +310,13 @@ class P2PNetwork:
                 await writer.drain()
             except Exception:
                 disconnected.append((reader, writer))
-        for pair in disconnected:
+        for reader, writer in disconnected:
+            try:
+                writer.close()
+                await writer.wait_closed()
+            except Exception:
+                pass
+            pair = (reader, writer)
             if pair in self._peers:
                 self._peers.remove(pair)
 
